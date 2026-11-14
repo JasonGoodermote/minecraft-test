@@ -1,11 +1,11 @@
 {
   "name": "railway-tiktok-tower-bot",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "private": true,
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js",
-    "test": "node test-route.js"
+    "check": "node --check index.js && node --check route.js && node --check grounded.js",
+    "test": "node test-route.js && node test-grounded.js"
   },
   "dependencies": {
     "mineflayer": "^4.31.0",

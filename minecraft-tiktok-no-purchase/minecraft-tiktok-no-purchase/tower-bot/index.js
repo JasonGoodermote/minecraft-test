@@ -1,353 +1,373 @@
 'use strict';
 /*
- * TikTok Glass Tower Builder v3
- * Private Minecraft/Paper + Mineflayer + Prismarine Viewer + RCON.
- * 25x20 interior, 300 blocks high, real ascent and 15-level material bands.
- * RCON builds arena and backs up block placement; Mineflayer controls camera
- * and tries natural walking / native block placement whenever possible.
- * Unverified against a live Railway deployment; test before livestreaming.
+ * TikTok Glass Tower v4 – grounded Mineflayer builder.
+ * Player locomotion and EVERY ROUTE BLOCK use actual Mineflayer controls.
+ * RCON is only for world/arena management, initial spawn and emergency rescue.
+ * Needs a dedicated, backed-up Minecraft Java/Paper 1.21.4 world.
  */
 const mineflayer = require('mineflayer');
-const {mineflayer: viewerPlugin} = require('prismarine-viewer');
+const {mineflayer: startViewer} = require('prismarine-viewer');
 const {Rcon} = require('rcon-client');
 const {Vec3} = require('vec3');
 const createItem = require('prismarine-item');
-const {validateArena,routeAt,buildArenaCommands,glassWallCommands} = require('./route');
+const {routeAt,validateArena,buildArenaCommands,glassWallCommands} = require('./route');
+const {
+  isEmptyBlock,isLiquid,standingPosition,firstAnchor,transitionSupport,
+  candidateSupports,durationToWalk,isFeetInsideSolid
+} = require('./grounded');
 
-const env = process.env;
-const n = (key,defaultValue)=>env[key]===undefined || env[key]==='' ? defaultValue : Number(env[key]);
-const b = (key,defaultValue)=>env[key]===undefined ? defaultValue : /^(1|true|yes)$/i.test(env[key]);
-const clamp=(v,low,high)=>Math.max(low,Math.min(high,v));
-const rand=(low,high)=>low+Math.random()*(high-low);
-const delay=ms=>new Promise(r=>setTimeout(r,ms));
+const e=process.env;
+const number=(key,def)=>e[key]===undefined||e[key]===''?def:Number(e[key]);
+const flag=(key,def)=>e[key]===undefined?def:/^(true|yes|1)$/i.test(e[key]);
+const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
 const cfg={
-  mcHost:env.MC_HOST||'minecraft.railway.internal',mcPort:n('MC_PORT',25565),
-  botName:env.BOT_USERNAME||'TowerBot', botAuth:env.BOT_AUTH||'offline',
-  rconHost:env.RCON_HOST||'minecraft.railway.internal',rconPort:n('RCON_PORT',25575),rconPassword:env.RCON_PASSWORD||'',
-  x:Math.round(n('TOWER_X',0)),z:Math.round(n('TOWER_Z',0)),
-  base:Math.round(n('TOWER_Y',0)),width:Math.round(n('TOWER_WIDTH',25)),
-  depth:Math.round(n('TOWER_DEPTH',20)),height:Math.round(n('TOWER_HEIGHT',300)),
-  bandHeight:Math.round(n('MATERIAL_BAND_HEIGHT',15)),
-  stepMs:clamp(n('STEP_MS',350),120,3000),
-  viewer:b('ENABLE_VIEWER',true),
-  firstPerson:b('VIEWER_FIRST_PERSON',true),
-  viewerPort:n('PORT',n('VIEWER_PORT',3000)),
-  viewDistance:Math.round(clamp(n('VIEW_DISTANCE',10),3,14)),
-  setupArena:b('ARENA_SETUP',true),
-  resetArena:b('ARENA_RESET',false),
-  autoResetAfterWin:b('RESET_AFTER_WIN',true),
-  nativePlacement:b('NATURAL_PLACEMENT',true),
-  useWalking:b('USE_WALKING',true),
-  glanceEvery:Math.round(clamp(n('GLANCE_EVERY',13),0,500)),
-  repairWindow:Math.round(clamp(n('REPAIR_LOOKBACK',80),5,250)),
-  repairGlass:b('REPAIR_GLASS',true),
-  overlayUrl:env.OVERLAY_URL||'',overlayToken:env.ADMIN_TOKEN||''
+  mcHost:e.MC_HOST||'minecraft.railway.internal',mcPort:number('MC_PORT',25565),
+  botName:e.BOT_USERNAME||'TowerBot',botAuth:e.BOT_AUTH||'offline',
+  rconHost:e.RCON_HOST||'minecraft.railway.internal',rconPort:number('RCON_PORT',25575),rconPassword:e.RCON_PASSWORD||'',
+  x:number('TOWER_X',0),z:number('TOWER_Z',0),base:number('TOWER_Y',0),
+  width:number('TOWER_WIDTH',25),depth:number('TOWER_DEPTH',20),height:number('TOWER_HEIGHT',300),
+  bandHeight:number('MATERIAL_BAND_HEIGHT',15),
+  stepMs:clamp(number('STEP_MS',420),160,3500),
+  viewer:flag('ENABLE_VIEWER',true),firstPerson:flag('VIEWER_FIRST_PERSON',true),
+  viewerPort:number('PORT',number('VIEWER_PORT',3000)),viewDistance:clamp(number('VIEW_DISTANCE',10),3,14),
+  setupArena:flag('ARENA_SETUP',true),resetArena:flag('ARENA_RESET',false),
+  winRestart:flag('RESET_AFTER_WIN',false),
+  allowRescue:flag('ALLOW_EMERGENCY_TP',true),
+  glanceEvery:Math.round(clamp(number('GLANCE_EVERY',24),0,500)),
+  repairWindow:Math.round(clamp(number('REPAIR_LOOKBACK',100),10,300)),
+  overlayUrl:e.OVERLAY_URL||'',overlayToken:e.ADMIN_TOKEN||''
 };
 validateArena(cfg);
-if (!cfg.rconPassword) throw new Error('Missing RCON_PASSWORD');
-if (!/^[A-Za-z0-9_]{1,16}$/.test(cfg.botName)) throw new Error('Invalid BOT_USERNAME');
-if (!Number.isInteger(cfg.bandHeight) || cfg.bandHeight<1 || cfg.bandHeight>100) throw new Error('Invalid MATERIAL_BAND_HEIGHT');
-if (cfg.resetArena && env.ARENA_CLEAR_CONFIRM !== 'YES_CLEAR_25X20X300') {
-  throw new Error('ARENA_RESET=true clears every block inside 25x20x300. Set ARENA_CLEAR_CONFIRM=YES_CLEAR_25X20X300 to authorize the destructive reset.');
-}
+if(!cfg.rconPassword)throw new Error('Missing RCON_PASSWORD');
+if(!/^[A-Za-z0-9_]{1,16}$/.test(cfg.botName))throw new Error('Invalid BOT_USERNAME');
+if(!Number.isInteger(cfg.bandHeight)||cfg.bandHeight<1)throw new Error('Invalid MATERIAL_BAND_HEIGHT');
+if(cfg.resetArena && e.ARENA_CLEAR_CONFIRM!=='YES_CLEAR_25X20X300')throw new Error('Destructive arena reset requires ARENA_CLEAR_CONFIRM=YES_CLEAR_25X20X300');
 
-let bot=null,rcon=null,activeLoop=false,connected=false,viewerStarted=false;
-let stepIndex=0,lastMaterial='',lastOverlayBand=-1,inventoryItem='',lastTntReaction=0,blastDue=0;
-let nativeCount=0,commandCount=0,walkCount=0,flyCount=0;
-const progressTotal=cfg.width*cfg.height;
-function isConnected(){return Boolean(bot && connected && bot.entity && bot._client?.state==='play');}
-function topOf(p) {return new Vec3(p.x+.5,p.y+1.06,p.z+.5);}
-function blockVec(p) {return new Vec3(p.x,p.y,p.z);}
-
-async function rconCommand(cmd){
-  for (let tries=0;tries<2;tries++){
+let bot=null,connection=false,viewerStarted=false,workerRunning=false,rcon=null;
+let step=0,loadedMaterial='',lastFillAt=-1,blastUntil=0,blastSeenAt=0,recoveryCount=0,placed=0,walked=0;
+const maxSteps=cfg.width*cfg.height;
+function active(){return !!(bot && connection && bot.entity && bot._client?.state==='play');}
+function asVec(v){return new Vec3(v.x,v.y,v.z);}
+function block(p){return bot.blockAt(asVec(p));}
+function actualName(material){return material.split(':').at(-1);}
+function isExpected(p){const v=block(p);return !!v && v.name===actualName(p.material);}
+function pos(){return bot.entity.position;}
+function distanceXZ(a,b){return Math.hypot(a.x-b.x,a.z-b.z);}
+function standAt(p){return standingPosition(p);}
+function say(s){console.log(`[Grounded v4] ${s}`);}
+async function command(s){
+  for(let attempt=0;attempt<2;attempt++){
     try{
-      if(!rcon)rcon=await Rcon.connect({host:cfg.rconHost,port:cfg.rconPort,password:cfg.rconPassword,timeout:12000});
-      const result=await rcon.send(cmd);
-      // Minecraft commonly returns localized errors as plain text rather than throwing.
-      if(/(unknown or incomplete command|too many blocks|outside of the world|cannot place blocks|expected whitespace|permission denied)/i.test(result||''))
-        throw new Error(`Command ${cmd.slice(0,100)} failed: ${result}`);
+      if(!rcon)rcon=await Rcon.connect({host:cfg.rconHost,port:cfg.rconPort,password:cfg.rconPassword,timeout:14000});
+      const result=await rcon.send(s);
+      if(/(unknown or incomplete command|too many blocks|outside of the world|permission denied)/i.test(result||''))throw new Error(result);
       return result;
-    }catch(e){
-      try{rcon?.end();}catch(_){ } rcon=null;
-      if(tries===1)throw e;
-      await delay(450);
+    }catch(ex){
+      try{rcon?.end();}catch(_){ }
+      rcon=null;
+      if(attempt===1)throw ex;
+      await pause(350);
     }
   }
 }
-async function overlay(action, extra={}){
-  if(!cfg.overlayUrl || !cfg.overlayToken)return;
+async function overlay(action,meta={}){
+  if(!cfg.overlayUrl||!cfg.overlayToken)return;
   try{
     await fetch(cfg.overlayUrl.replace(/\/$/,'')+'/api/control',{
-      method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+cfg.overlayToken},
-      body:JSON.stringify({action,...extra}),signal:AbortSignal.timeout(3500)
+      method:'POST',headers:{Authorization:`Bearer ${cfg.overlayToken}`,'Content-Type':'application/json'},
+      body:JSON.stringify({action,...meta}),signal:AbortSignal.timeout(2500)
     });
-  }catch(e){console.warn('Overlay event failed:',e.message);}
+  }catch(ex){console.warn('Overlay:',ex.message);}
 }
-async function arenaInit(reset){
-  console.log(`Arena setup: interior=${cfg.width}x${cfg.depth}, height=${cfg.height}, base Y=${cfg.base}, clear=${reset}`);
-  const setup = buildArenaCommands(cfg,reset);
-  for(const [i,cmd] of setup.entries()) {
-    await rconCommand(cmd);
-    if ((i+1)%8===0) console.log('Arena commands:',i+1,'/',setup.length);
-  }
-  console.log('Glass tower walls, barrier reinforcement, floor and roof ready');
-}
-async function safeGameSetup(){
-  for(const cmd of [
-    'gamerule keepInventory true',
-    'gamerule doDaylightCycle false',
-    'gamerule doWeatherCycle false',
-    'gamerule doTileDrops false',
-    'time set day',
-    'weather clear',
-    `gamemode creative ${cfg.botName}`,
+async function gameSetup(){
+  const commands=[
+    'gamerule keepInventory true','gamerule doDaylightCycle false',
+    'gamerule doWeatherCycle false','gamerule doTileDrops false',
+    'time set day','weather clear',`gamemode creative ${cfg.botName}`,
     `effect give ${cfg.botName} minecraft:resistance 999999 4 true`
-  ]) {
-    try { await rconCommand(cmd); } catch(e) { console.warn('Noncritical game command:',e.message); }
-  }
-}
-async function camera(target) {
-  if(!isConnected())return;
-  try{await bot.lookAt(target,false);}catch(e){console.warn('Camera:',e.message);}
-}
-async function lookAround(){
-  if(!isConnected())return;
-  const pos=bot.entity.position.clone();
-  const targets=[
-    new Vec3(cfg.x+cfg.width/2,clamp(pos.y+rand(7,22),cfg.base+2,cfg.base+cfg.height),cfg.z+cfg.depth/2),
-    new Vec3(clamp(pos.x+rand(-6,6),cfg.x+1,cfg.x+cfg.width-2),clamp(pos.y+rand(-4,4),cfg.base+1,cfg.base+cfg.height),clamp(pos.z+rand(-5,5),cfg.z+1,cfg.z+cfg.depth-2))
   ];
-  await camera(targets[Math.random()<.7?0:1]);
-  await delay(rand(220,480));
+  for(const c of commands){try{await command(c);}catch(ex){console.warn('Optional game setting:',ex.message);}}
 }
-async function flyShortTo(destination){
-  if(!isConnected())return;
-  try {
-    const original=bot.entity.position.clone();
-    const delta=destination.minus(original);
-    const dist=delta.norm();
-    // API documents that each flying leg should be less than two blocks.
-    const parts=Math.max(1,Math.ceil(dist/1.35));
-    for(let i=1;i<=parts;i++){
-      if(!isConnected())return;
-      const p=original.plus(delta.scaled(i/parts));
-      await bot.creative.flyTo(p);
-    }
-    flyCount++;
-  }catch(e){
-    console.warn('Walking/flying recovery via tp:',e.message);
-    await rconCommand(`tp ${cfg.botName} ${destination.x.toFixed(2)} ${destination.y.toFixed(2)} ${destination.z.toFixed(2)}`);
-    await delay(150);
+async function setupArena(reset){
+  const cmds=buildArenaCommands(cfg,reset);
+  say(`Building SEALED arena walls and floor FIRST. reset=${reset}, ${cmds.length} commands`);
+  for(let i=0;i<cmds.length;i++){
+    await command(cmds[i]);
+    if((i+1)%10===0)say(`Arena ${i+1}/${cmds.length}`);
   }
+  say('Arena sealed; interior cleared/drained if reset was enabled');
 }
-async function tryWalkTo(p){
-  if(!cfg.useWalking||!isConnected())return false;
-  const dest=topOf(p), now=bot.entity.position.clone();
-  const horizontal=Math.hypot(now.x-dest.x,now.z-dest.z);
-  if(horizontal<.1)return true;
-  if(horizontal>1.65||Math.abs(now.y-dest.y)>.45)return false;
-  try{
-    bot.creative.stopFlying();
-    await camera(new Vec3(dest.x,now.y+1.4,dest.z));
-    const deadline=Date.now()+1450;
-    bot.setControlState('forward',true);
-    while(isConnected() && Date.now()<deadline){
-      if(Math.hypot(bot.entity.position.x-dest.x,bot.entity.position.z-dest.z)<.30){
-        walkCount++;return true;
-      }
-      await delay(45);
-    }
-    return false;
-  }catch(e){console.warn('Walking:',e.message);return false;}
-  finally {try{bot.clearControlStates();bot.creative.startFlying();}catch(_){}}
+async function resetCamera(){
+  if(!active())return;
+  const p=pos();
+  await bot.lookAt(new Vec3(p.x+2,p.y+1.6,p.z+2),false);
 }
-async function moveTo(p,previous){
-  if(!isConnected())return;
-  // Walk the full, level path; fly only for stair climbs or damaged route recovery.
-  const walkable=previous && previous.y===p.y &&
-    Math.abs(previous.x-p.x)+Math.abs(previous.z-p.z)===1 && Date.now()>blastDue;
-  if(walkable && await tryWalkTo(p))return;
-  const dest=topOf(p);
-  await camera(new Vec3(dest.x, dest.y+1.5, dest.z));
-  await flyShortTo(dest);
+async function glance(){
+  if(!active())return;
+  const p=pos();
+  const points=[
+    new Vec3(cfg.x+cfg.width/2,Math.min(cfg.base+cfg.height,p.y+6),cfg.z+cfg.depth/2),
+    new Vec3(p.x+(Math.random()-.5)*5,p.y+1.3,p.z+(Math.random()-.5)*5),
+    new Vec3(p.x+.5,p.y+1.7,p.z+5)
+  ];
+  bot.clearControlStates();
+  await bot.lookAt(points[Math.floor(Math.random()*points.length)],false);
+  await pause(240+Math.random()*250);
 }
-function nearbyBlock(p) {
-  const v=bot?.blockAt(blockVec(p));
-  return v || null;
+async function setItem(material){
+  if(loadedMaterial===material && step-lastFillAt<48 && bot.heldItem?.count>8)return;
+  const data=require('minecraft-data')(bot.version);
+  const definition=data.itemsByName[actualName(material)];
+  if(!definition)throw new Error(`Material ${material} is not an inventory item in version ${bot.version}`);
+  const Item=createItem(bot.version);
+  await bot.creative.setInventorySlot(36,new Item(definition.id,64));
+  bot.setQuickBarSlot(0);
+  // Wait for the held-item packet; network scheduling can exceed 95ms on Railway.
+  for(let i=0; i<10 && !bot.heldItem; i++)await pause(100);
+  if(!bot.heldItem)throw new Error('Inventory item is not held (creative inventory failed)');
+  loadedMaterial=material;lastFillAt=step;
 }
-function isAir(b){return b && ['air','cave_air','void_air'].includes(b.name);}
-async function prepareMaterial(material){
-  if(!isConnected() || !cfg.nativePlacement || inventoryItem===material)return;
-  try{
-    const itemName=material.split(':')[1];
-    const db=require('minecraft-data')(bot.version);
-    const data=db.itemsByName[itemName];
-    if(!data)throw new Error(`No item data for ${itemName} on ${bot.version}`);
-    const Item=createItem(bot.version);
-    await bot.creative.setInventorySlot(36,new Item(data.id,64));
-    bot.setQuickBarSlot(0);
-    inventoryItem=material;
-    console.log('Block switched to:',material);
-  }catch(e){
-    inventoryItem='';
-    console.warn('Inventory placement unavailable; RCON placement remains functional:',e.message);
-  }
-}
-async function placeStep(p){
-  if(!isConnected())return;
-  if(nearbyBlock(p) && !isAir(nearbyBlock(p)))return;
-  await prepareMaterial(p.material);
-  await camera(new Vec3(p.x+.5,p.y+.52,p.z+.5));
-  await delay(rand(90,170));
-  let placed=false;
-  if(cfg.nativePlacement && inventoryItem===p.material){
-    for(const offset of [new Vec3(0,-1,0),new Vec3(-1,0,0),new Vec3(1,0,0),new Vec3(0,0,-1),new Vec3(0,0,1)]){
-      const ref=bot.blockAt(blockVec(p).plus(offset));
-      if(!ref || isAir(ref))continue;
-      try{
-        await bot.placeBlock(ref,offset.scaled(-1));
-        const resulting=nearbyBlock(p);
-        placed=Boolean(resulting && !isAir(resulting));
-        if(placed){nativeCount++;break;}
-      }catch(_){ /* Unsupported viewpoint/support — reliable command fallback. */ }
-    }
-  }
-  if(!placed){await rconCommand(`setblock ${p.x} ${p.y} ${p.z} ${p.material}`);commandCount++;}
-  try{bot.swingArm('right');}catch(_){ }
-}
-async function checkForSetback(){
-  if(!isConnected() || stepIndex===0)return;
-  // Rewind only to OBSERVED destroyed blocks. A gift is never a fake forced loss.
-  const start=Math.max(0,stepIndex-cfg.repairWindow);
-  let firstDestroyed=-1,checked=0;
-  for(let i=start;i<stepIndex;i++) {
-    const p=routeAt(i,cfg),worldBlock=nearbyBlock(p);
-    if(!worldBlock)continue; // Chunk not loaded: do not assume broken.
-    checked++;
-    if(isAir(worldBlock)) {firstDestroyed=i;break;}
-  }
-  if(firstDestroyed!==-1) {
-    console.log('TNT broke the climb: rewind from step',stepIndex,'to',firstDestroyed,'(',Math.floor(firstDestroyed/cfg.width),'blocks high )');
-    stepIndex=firstDestroyed;
-  } else console.log('TNT settled; no broken blocks observed in',checked,'loaded recent steps');
-}
-async function repairGlassNearHeight(){
-  if(!cfg.repairGlass)return;
-  const current=Math.floor(stepIndex/cfg.width);
-  const low=Math.max(cfg.base,cfg.base+current-6);
-  const high=Math.min(cfg.base+cfg.height+1,cfg.base+current+7);
-  for(const c of glassWallCommands(cfg,low,high)) await rconCommand(c);
-}
-async function reactToExplosion(){
-  if(!blastDue || Date.now()<blastDue)return false;
-  blastDue=0;
-  console.log('Explosion aftermath: inspecting route and glass walls');
-  await camera(new Vec3(cfg.x+cfg.width/2,Math.min(cfg.base+cfg.height,bot.entity.position.y+12),cfg.z+cfg.depth/2));
-  await delay(450);
-  await checkForSetback();
-  await repairGlassNearHeight();
-  return true;
-}
-async function setup(){
-  await safeGameSetup();
-  if(cfg.setupArena)await arenaInit(cfg.resetArena);
-  const start=routeAt(0,cfg);
-  await rconCommand(`tp ${cfg.botName} ${start.x+.5} ${start.y+2.4} ${start.z+.5} 0 72`);
-  await delay(550);
-  bot.creative.startFlying();
-  lastMaterial='';inventoryItem='';stepIndex=0;lastOverlayBand=-1;
-  if(!cfg.resetArena)console.log('ARENA_RESET=false: pre-existing construction remains inside the arena. Use ARENA_RESET=true with confirmation to clear it.');
-  await overlay('level',{level:1});
-}
-async function progressLoop(){
-  while(isConnected()){
+async function placeNatively(p){
+  if(!active())throw new Error('Bot disconnected');
+  let existing=block(p);
+  if(!existing)throw new Error(`Unloaded block at ${p.x},${p.y},${p.z}`);
+  if(isExpected(p))return;
+  if(isLiquid(existing))throw new Error(`Water or lava occupies ${p.x},${p.y},${p.z}; reset/drain the arena first`);
+  if(!isEmptyBlock(existing))throw new Error(`Unexpected ${existing.name} in route at ${p.x},${p.y},${p.z}; use a clean arena`);
+  if(isFeetInsideSolid(pos(),q=>block(q)))throw new Error('Bot feet are inside a solid block—stopping placement');
+  // Never issue RCON setblock for route progression. No fake construction.
+  for(let attempt=0;attempt<3;attempt++){
+    await setItem(p.material);
+    const options=candidateSupports(p,q=>block(q));
+    if(!options.length)throw new Error(`No adjacent supporting block for native placement at ${p.x},${p.y},${p.z}`);
+    bot.setControlState('sneak',true);
     try{
-      if(blastDue){
-        if(Date.now()<blastDue){await delay(150);continue;}
-        await reactToExplosion();
+      for(const {reference,face} of options){
+        try{
+          const faceVec=asVec(face);
+          const aim=reference.position.plus(new Vec3(.5+face.x*.49,.5+face.y*.49,.5+face.z*.49));
+          await bot.lookAt(aim,false);
+          if(Math.random()<.22)await pause(70+Math.random()*75);
+          await bot.placeBlock(reference,faceVec);
+          await pause(75);
+          if(isExpected(p)){
+            placed++;
+            if(placed%50===0)say(`${placed} native placements; level ${p.h+1}/${cfg.height}`);
+            return;
+          }
+        }catch(ex){
+          if(attempt===2)console.warn('Placement face failed:',ex.message);
+        }
       }
-      if(stepIndex>=progressTotal){
-        console.log('WIN! Reached the top of 300-block glass tower');
-        await overlay('win');
-        await lookAround();
-        await delay(3200);
-        if(!cfg.autoResetAfterWin){console.log('RESET_AFTER_WIN=false; holding at goal');return;}
-        // Do not rebuild the walls on each win, just clear interior 25x20x300.
-        const resetCommands=buildArenaCommands(cfg,true).filter(c=>c.includes('minecraft:air'));
-        for(const c of resetCommands)await rconCommand(c);
-        stepIndex=0;inventoryItem='';lastOverlayBand=-1;
-        const start=routeAt(0,cfg);
-        // Once the run is complete, return instantly rather than flying down 300 blocks.
-        await rconCommand(`tp ${cfg.botName} ${start.x+.5} ${start.y+2.4} ${start.z+.5} 0 72`);
-        await overlay('level',{level:1});
-        continue;
+    }finally{bot.setControlState('sneak',false);}
+    await pause(150+attempt*120);
+    if(isExpected(p))return;
+  }
+  throw new Error(`Native placement failed at ${p.x},${p.y},${p.z}; no command fallback used`);
+}
+async function moveByControls(destination, label){
+  const dest=asVec(destination);
+  if(!active())throw new Error('Disconnected before walking');
+  const initial=pos().clone();
+  const heightDiff=dest.y-initial.y;
+  if(heightDiff>1.25||heightDiff<-.8)throw new Error(`Walk request has unsafe height change ${heightDiff.toFixed(1)}`);
+  const rise=heightDiff>.38;
+  const timeout=durationToWalk(distanceXZ(initial,dest),rise);
+  const deadline=Date.now()+timeout;
+  let lastPos=initial.clone(),lastMovement=Date.now(),lastJump=0,arrivedAt=0;
+  bot.clearControlStates();
+  try{
+    while(active() && Date.now()<deadline){
+      const here=pos();
+      const horizontal=distanceXZ(here,dest);
+      const vertical=Math.abs(here.y-dest.y);
+      if(horizontal<.32 && vertical<.38){
+        if(!arrivedAt)arrivedAt=Date.now();
+        if(Date.now()-arrivedAt>160){walked++;return;}
+        bot.setControlState('forward',false);
+        bot.setControlState('jump',false);
+        await pause(70);continue;
       }
-      const p=routeAt(stepIndex,cfg),previous=stepIndex?routeAt(stepIndex-1,cfg):null;
-      const band=Math.floor(p.h/cfg.bandHeight);
-      if(band!==lastOverlayBand){
-        console.log(`Elevation ${p.h}/${cfg.height} blocks — stage ${band+1}, material ${p.material}`);
-        lastOverlayBand=band;
-        await overlay('level',{level:band+1});
-      }
-      await placeStep(p);
-      await moveTo(p,previous);
-      stepIndex++;
-      if(cfg.glanceEvery>0 && stepIndex%cfg.glanceEvery===0 && Math.random()<.65) await lookAround();
-      if(stepIndex%100===0)console.log(`Progress ${Math.floor(stepIndex/cfg.width)}/${cfg.height} blocks high, placed=${nativeCount} native/${commandCount} RCON, walked=${walkCount}, flew=${flyCount}`);
-      await delay(cfg.stepMs+rand(-45,90));
-    }catch(e){
-      console.error('Build step error:',e.stack||e.message);
-      await delay(1800);
+      arrivedAt=0;
+      if(horizontal>.16){
+        // Re-aim at a human head-height target every ~90ms while walking.
+        await bot.lookAt(new Vec3(dest.x,here.y+1.55,dest.z),false);
+        bot.setControlState('forward',true);
+      } else bot.setControlState('forward',false);
+      const needJump=dest.y-here.y>.36;
+      if(needJump && Date.now()-lastJump>390){
+        bot.setControlState('jump',true);lastJump=Date.now();
+      } else if(Date.now()-lastJump>220){bot.setControlState('jump',false);}
+      if(here.distanceTo(lastPos)>.11){lastPos=here.clone();lastMovement=Date.now();}
+      if(Date.now()-lastMovement>1800)throw new Error(`Stuck while walking (${label}): ${here.toString()}`);
+      if(isFeetInsideSolid(here,q=>block(q)))throw new Error(`Player inside a block while walking (${label})`);
+      await pause(85);
+    }
+    throw new Error(`Walking timeout (${label}); from ${initial.toString()} toward ${dest.toString()}, now ${pos().toString()}`);
+  }finally{bot.clearControlStates();}
+}
+async function walkToRoute(p){
+  const dest=standAt(p);
+  const now=pos();
+  if(distanceXZ(now,dest)<.32 && Math.abs(now.y-dest.y)<.38)return;
+  for(let attempt=0;attempt<2;attempt++){
+    try{await moveByControls(dest,`route step=${step}`);return;}
+    catch(ex){
+      say(`Walking retry ${attempt+1}: ${ex.message}`);
+      bot.clearControlStates();
+      if(attempt===1)throw ex;
+      // Humanlike pause, look at the intended platform, retry the jump.
+      await bot.lookAt(new Vec3(p.x+.5,p.y+.45,p.z+.5),false);
+      await pause(280);
     }
   }
 }
-async function run(){
-  if(activeLoop)return;
-  activeLoop=true;
-  try{await setup();await progressLoop();}
-  catch(e){console.error('Setup failed:',e.stack||e.message);}
-  finally{activeLoop=false;}
+async function emergencyResume(previous,reason){
+  // Explicitly exceptional; ordinary blocks/movement never use teleportation.
+  if(!cfg.allowRescue)throw new Error(`Rescue disabled: ${reason}`);
+  recoveryCount++;
+  const safe=previous?standAt(previous):firstAnchor(routeAt(0,cfg));
+  say(`EMERGENCY rescue #${recoveryCount}: ${reason}. Teleport ONLY for recovery, not normal movement`);
+  bot.clearControlStates();
+  await command(`tp ${cfg.botName} ${safe.x.toFixed(2)} ${safe.y.toFixed(2)} ${safe.z.toFixed(2)}`);
+  await pause(750);
+  if(isFeetInsideSolid(pos(),q=>block(q)))throw new Error('Rescue arrived inside a solid block—arena reset required');
+}
+async function placeAndWalk(i){
+  const p=routeAt(i,cfg),previous=i>0?routeAt(i-1,cfg):null;
+  const climbBase=transitionSupport(previous,p);
+  if(climbBase){
+    // Riser lets the bot jump +1 block. Without it, the raised step has no
+    // physical neighbor and native block placement fails.
+    await placeNatively(climbBase);
+  }
+  await placeNatively(p);
+  await walkToRoute(p);
+  const band=Math.floor(p.h/cfg.bandHeight);
+  if(i===0||i%cfg.width===0){
+    if(i%cfg.width===0) say(`Elevation ${p.h+1}/${cfg.height}, band ${band+1}, ${p.material}`);
+    await overlay('level',{level:band+1});
+  }
+  if(cfg.glanceEvery>0 && i>0 && i%cfg.glanceEvery===0 && Math.random()<.5)await glance();
+}
+async function repairGlassNear(){
+  const y=Math.floor(pos()?.y||cfg.base);
+  const lo=clamp(y-8,cfg.base,cfg.base+cfg.height);
+  const hi=clamp(y+10,cfg.base,cfg.base+cfg.height+1);
+  for(const c of glassWallCommands(cfg,lo,hi))await command(c);
+}
+async function inspectAfterTnt(){
+  blastUntil=0;
+  bot.clearControlStates();
+  await pause(300);
+  let missing=-1;
+  for(let i=Math.max(0,step-cfg.repairWindow);i<step;i++){
+    const p=routeAt(i,cfg);
+    const v=block(p);
+    if(v && isEmptyBlock(v)){missing=i;break;}
+  }
+  const currentY=Math.floor(pos().y),expectedY=step>0?routeAt(step-1,cfg).y+1:cfg.base;
+  if(missing>=0||currentY<expectedY-3){
+    step=missing>=0?missing:0;
+    const prev=step>0?routeAt(step-1,cfg):null;
+    await emergencyResume(prev,`TNT setback / fall (to route step ${step})`);
+  }
+  await repairGlassNear();
+  say(`Explosion resolved; next route step=${step}`);
+}
+async function performSetup(){
+  await gameSetup();
+  if(cfg.setupArena)await setupArena(cfg.resetArena);
+  const first=routeAt(0,cfg),anchor=firstAnchor(first);
+  bot.clearControlStates();
+  // Single initial teleport to known dry position, never into a newly created block.
+  await command(`tp ${cfg.botName} ${anchor.x.toFixed(2)} ${anchor.y.toFixed(2)} ${anchor.z.toFixed(2)} 0 10`);
+  await pause(850);
+  bot.creative.stopFlying(); // gravity and walking, no creative flyTo
+  step=0;loadedMaterial='';lastFillAt=-1;blastUntil=0;
+  const feet=pos();
+  if(isFeetInsideSolid(feet,q=>block(q)))throw new Error(`Initial spawn embedded in a block at ${feet.toString()}. Reset arena.`);
+  const feetBlock=block(feet.floored());
+  if(isLiquid(feetBlock))throw new Error('Spawn is under water. Stop: use a fresh flat world and one-time arena reset.');
+  say(`Spawn on the foundation at ${feet.toString()}, native placement only`);
+}
+async function buildLoop(){
+  while(active()){
+    if(blastUntil){
+      if(Date.now()<blastUntil){bot.clearControlStates();await pause(200);continue;}
+      await inspectAfterTnt();continue;
+    }
+    if(step===maxSteps){
+      say('GOAL REACHED: 300 blocks high');
+      await overlay('win');
+      await glance();
+      if(!cfg.winRestart){say('Holding at goal (RESET_AFTER_WIN=false)');return;}
+      await pause(3000);
+      await setupArena(true);
+      const p=routeAt(0,cfg),a=firstAnchor(p);
+      await command(`tp ${cfg.botName} ${a.x} ${a.y} ${a.z}`);
+      await pause(600);
+      step=0;loadedMaterial='';lastFillAt=-1;continue;
+    }
+    try{
+      await placeAndWalk(step);
+      step++;
+      await pause(cfg.stepMs+Math.random()*100);
+    }catch(ex){
+      bot.clearControlStates();
+      console.error(`Route step ${step} FAILED: ${ex.stack||ex.message}`);
+      if(/Water or lava|Unexpected .*in route|Initial spawn|No adjacent supporting block|Inventory item|creative inventory|Unloaded block|Native placement failed/.test(ex.message)){
+        throw ex; // Explicitly stop instead of papering over a broken route.
+      }
+      const prev=step>0?routeAt(step-1,cfg):null;
+      await emergencyResume(prev,ex.message);
+      await pause(500);
+    }
+  }
+}
+async function work(){
+  if(workerRunning)return;
+  workerRunning=true;
+  try{await performSetup();await buildLoop();}
+  catch(ex){console.error('Builder stopped (not silently falling back to commands):',ex.stack||ex.message);}
+  finally{workerRunning=false;try{bot?.clearControlStates();}catch(_){}}
 }
 function connect(){
-  connected=false;
+  connection=false;
   const opts={host:cfg.mcHost,port:cfg.mcPort,username:cfg.botName,auth:cfg.botAuth,hideErrors:false};
-  if(cfg.botAuth==='microsoft')opts.profilesFolder=env.MC_PROFILE_FOLDER||'/data/minecraft-auth';
+  if(cfg.botAuth==='microsoft')opts.profilesFolder=e.MC_PROFILE_FOLDER||'/data/minecraft-auth';
   bot=mineflayer.createBot(opts);
   bot.on('spawn',()=>{
-    connected=true;
-    console.log('Minecraft bot spawned (Glass Tower v3)');
-    if(cfg.viewer && !viewerStarted){
+    connection=true;
+    say('Bot spawned');
+    if(cfg.viewer&&!viewerStarted){
       try{
-        viewerPlugin(bot,{port:cfg.viewerPort,firstPerson:cfg.firstPerson,viewDistance:cfg.viewDistance});
+        startViewer(bot,{port:cfg.viewerPort,firstPerson:cfg.firstPerson,viewDistance:cfg.viewDistance});
         viewerStarted=true;
-        console.log(`Browser Minecraft viewer listening on port ${cfg.viewerPort}`);
-      }catch(e){console.error('Viewer:',e.message);}
+        say(`Browser viewer listening on port ${cfg.viewerPort}`);
+      }catch(ex){console.error('Viewer:',ex.message);}
     }
-    void run();
+    void work();
   });
   bot.on('entitySpawn',entity=>{
     const name=String(entity?.name||entity?.displayName||'').toLowerCase();
     if(!name.includes('tnt')&&!name.includes('primed'))return;
-    const now=Date.now();
-    if(now-lastTntReaction>2200){
-      console.log('TNT spotted! Pausing building for blast');
-      lastTntReaction=now;
-      void lookAround();
-    }
-    blastDue=Math.max(blastDue,now+4800);
+    blastUntil=Math.max(blastUntil,Date.now()+5000);
+    if(Date.now()-blastSeenAt>1600){say('TNT detected—stopping and watching for damage');blastSeenAt=Date.now();bot.clearControlStates();}
   });
-  bot.on('kicked',reason=>console.error('Minecraft kicked the bot:',reason));
-  bot.on('error',e=>console.error('Minecraft connection:',e.message));
+  bot.on('kicked',v=>console.error('Minecraft kicked bot:',v));
+  bot.on('error',ex=>console.error('Minecraft connection:',ex.message));
   bot.on('end',()=>{
-    console.warn('Minecraft connection ended; retry in 10 seconds');
-    connected=false;activeLoop=false;
-    try{bot.viewer?.close();}catch(_){ }
+    say('Disconnected; reconnecting in 10 seconds');
+    connection=false;workerRunning=false;
+    try{bot?.viewer?.close();}catch(_){ }
     viewerStarted=false;
-    try{rcon?.end();}catch(_){ } rcon=null;
+    try{rcon?.end();}catch(_){ }
+    rcon=null;
     setTimeout(connect,10000);
   });
 }
-console.log(`Glass Tower v3: inside ${cfg.width}x${cfg.depth}, height ${cfg.height}, Y=${cfg.base}, 15-block material bands, viewer=${cfg.viewer}`);
-console.log('No external Minecraft game client required. Never expose the offline-mode server or RCON publicly.');
+say(`Version 4 grounded: glass interior ${cfg.width}x${cfg.depth}x${cfg.height} Y=${cfg.base}, ${maxSteps} placed steps; no flyTo or command placement`);
+say('Offline-mode Minecraft server and RCON MUST remain private. Use a separate, backed-up game world.');
 connect();
