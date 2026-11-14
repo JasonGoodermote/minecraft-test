@@ -7,8 +7,9 @@
     "check": "node --check index.js"
   },
   "dependencies": {
-    "mineflayer": "^4.31.0",
-    "rcon-client": "^4.2.5",
-    "prismarine-viewer": "^1.33.0"
-  }
+  "mineflayer": "^4.31.0",
+  "rcon-client": "^4.2.5",
+  "prismarine-viewer": "^1.33.0",
+  "canvas": "^3.2.3"
+}
 }
