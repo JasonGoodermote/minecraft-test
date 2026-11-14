@@ -1,0 +1,8 @@
+{
+  "name": "tiktok-minecraft-face-overlay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Railway-hosted animated LIVE avatar overlay with TikTok gift reactions",
+  "scripts": {"start": "node server.js"},
+  "engines": {"node": ">=20"}
+}

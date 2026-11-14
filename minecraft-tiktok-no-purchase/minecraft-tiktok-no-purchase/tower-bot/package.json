@@ -1,0 +1,14 @@
+{
+  "name": "railway-tiktok-tower-bot",
+  "version": "1.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node index.js",
+    "check": "node --check index.js"
+  },
+  "dependencies": {
+    "mineflayer": "^4.31.0",
+    "rcon-client": "^4.2.5",
+    "prismarine-viewer": "^1.33.0"
+  }
+}

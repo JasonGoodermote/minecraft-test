@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>LIVE Avatar Overlay — 1080 × 1920</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:transparent!important;font-family:Inter,ui-sans-serif,system-ui,Arial,sans-serif;color:white}
+:root{--w:1080;--h:1920}#stage{position:absolute;top:0;left:0;width:1080px;height:1920px;transform-origin:top left;overflow:hidden;background:transparent;pointer-events:none}
+#top{position:absolute;left:16px;top:14px;width:1048px;height:755px;border-radius:36px;overflow:hidden;box-shadow:0 19px 55px #01062088;border:3px solid #ffffff42;background:radial-gradient(ellipse at 46% 28%,#223e5f 0,#171d36 52%,#090d20 100%)}
+#top:before{content:"";position:absolute;width:680px;height:680px;left:178px;top:22px;border-radius:50%;background:radial-gradient(circle,#53f1f746,transparent 67%);filter:blur(15px)}
+#top:after{content:"";position:absolute;inset:0;z-index:7;pointer-events:none;background:linear-gradient(120deg,#ffffff0e,transparent 40%)}
+#header{position:absolute;top:27px;left:34px;right:34px;z-index:10;display:flex;align-items:center;justify-content:space-between}
+.pill{background:#101725b9;border:1px solid #ffffff4f;border-radius:999px;padding:12px 20px;display:flex;align-items:center;gap:10px;letter-spacing:2px;font-size:20px;font-weight:850;box-shadow:0 4px 20px #0004}.dot{width:12px;height:12px;border-radius:99px;background:#f94d7a;box-shadow:0 0 14px #f94d7a;animation:dotpulse 1s infinite alternate}@keyframes dotpulse{to{opacity:.42}}
+#avatarWrap{position:absolute;left:220px;top:47px;width:608px;height:625px;transform-origin:50% 65%;animation:breathing 4.1s ease-in-out infinite;filter:drop-shadow(0 22px 24px #05071588)}
+@keyframes breathing{0%,100%{transform:translateY(2px) rotate(-1deg)}50%{transform:translateY(-7px) rotate(.8deg)}}
+#defaultAvatar{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+#photoAvatar{position:absolute;top:35px;left:62px;width:490px;height:510px;border-radius:48% 48% 39% 39%;object-fit:cover;object-position:center 22%;border:5px solid #b7f8ff70;display:none;box-shadow:0 15px 50px #0007}
+#avatarWrap.png #defaultAvatar{display:none}#avatarWrap.png #photoAvatar{display:block}
+#scratchArm{opacity:0;transform:translate(94px,185px) rotate(19deg);transform-origin:480px 585px;pointer-events:none}
+#avatarWrap.scratching #scratchArm{opacity:1;animation:raiseScratch 3.1s ease-in-out both}
+#avatarWrap.scratching #scratchHand{transform-origin:447px 207px;animation:scratchMotion .24s ease-in-out 7 alternate .65s}
+#avatarWrap.png.scratching #photoAvatar{animation:photoScratch 3.1s ease-in-out}
+@keyframes raiseScratch{0%,100%{opacity:0;transform:translate(94px,185px) rotate(19deg)}15%,82%{opacity:1;transform:translate(0,0) rotate(0deg)}30%,48%,66%{transform:translate(0,-8px) rotate(-3deg)}39%,57%,75%{transform:translate(3px,5px) rotate(3deg)}95%{opacity:1;transform:translate(65px,150px) rotate(13deg)}}
+@keyframes scratchMotion{from{transform:translate(-5px,-5px) rotate(-8deg)}to{transform:translate(5px,6px) rotate(7deg)}}
+@keyframes photoScratch{0%,100%{transform:rotate(0)}25%,75%{transform:rotate(-2deg)}50%{transform:rotate(2deg)}}
+#avatarWrap.boom{animation:hit .55s ease-out 1}@keyframes hit{0%{transform:translateX(0) rotate(0)}20%{transform:translateX(-26px) rotate(-8deg)}40%{transform:translateX(25px) rotate(8deg)}65%{transform:translateX(-13px) rotate(-5deg)}100%{transform:translateX(0) rotate(0)}}
+#eyes{transform-box:fill-box;transform-origin:center;transition:transform .08s}#eyes.closed{transform:scaleY(.045)}#eyebrows{transform-box:fill-box;transform-origin:center;transition:transform .3s}#eyebrows.surprised{transform:translateY(-10px)}
+#hostName{position:absolute;bottom:18px;left:0;right:0;z-index:12;text-align:center;font-size:56px;font-weight:950;letter-spacing:5px;text-shadow:0 5px 20px #071128}#sub{display:block;font-size:19px;font-weight:750;letter-spacing:5px;color:#adf5f8}
+#gift{position:absolute;left:78px;right:78px;top:775px;padding:17px 27px;text-align:center;border-radius:26px;background:linear-gradient(90deg,#f4227999,#9d43f9c9);border:2px solid #fff7;box-shadow:0 14px 35px #0009;z-index:9;font-size:34px;line-height:1.2;font-weight:900;opacity:0;transform:translateY(-13px) scale(.96);transition:.22s}#gift.show{opacity:1;transform:none}#gift small{display:block;font-size:18px;letter-spacing:2px;margin-top:5px}
+#boom{position:absolute;left:360px;top:210px;z-index:13;font-size:120px;opacity:0;transform:scale(.3) rotate(-15deg);text-shadow:0 8px 25px #0009}#boom.active{animation:explosion 1s ease-out}@keyframes explosion{0%{opacity:0;transform:scale(.2) rotate(-15deg)}20%{opacity:1;transform:scale(1.3) rotate(9deg)}70%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1.5)}}
+#win{position:absolute;z-index:14;top:255px;left:100px;right:100px;text-align:center;font-size:92px;font-weight:1000;color:#b1ffe1;text-shadow:0 0 25px #03ffac,0 4px 25px #000;opacity:0}#win.active{animation:winpop 2.2s ease-out}@keyframes winpop{0%{opacity:0;transform:scale(.4)}16%,72%{opacity:1;transform:scale(1.1)}100%{opacity:0;transform:scale(1.2)}}
+</style></head><body>
+<div id="stage">
+<div id="top"><div id="header"><div class="pill"><span class="dot"></span> AI HOST · LIVE</div><div class="pill">⛏️ LEVEL <span id="level">1</span></div></div>
+<div id="avatarWrap">
+<svg id="defaultAvatar" viewBox="0 0 620 640" aria-label="Animated virtual person" xmlns="http://www.w3.org/2000/svg"><defs>
+<linearGradient id="coat" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#14afb9"/><stop offset="1" stop-color="#123b71"/></linearGradient>
+<radialGradient id="skin" cx=".42" cy=".35" r=".85"><stop stop-color="#efb889"/><stop offset=".6" stop-color="#bd805f"/><stop offset="1" stop-color="#7e4b41"/></radialGradient>
+<linearGradient id="hair" x1="0" y1="0" x2=".5" y2="1"><stop stop-color="#211a23"/><stop offset="1" stop-color="#100e1a"/></linearGradient>
+<radialGradient id="glow" cx=".5" cy=".5" r=".5"><stop stop-color="#8cf6f944"/><stop offset="1" stop-color="#70d4fa00"/></radialGradient>
+</defs>
+<ellipse cx="312" cy="356" rx="284" ry="271" fill="url(#glow)"/>
+<!-- sweater and shoulders -->
+<path d="M81 632 Q97 521 186 490 L257 473 Q309 510 373 471 L448 492 Q531 525 538 632 Z" fill="url(#coat)"/>
+<path d="M250 482 L312 562 L380 482 L361 469 L263 463Z" fill="#f0e0ce"/>
+<path d="M268 489L312 545 354 489Q313 513 268 489" fill="#bd8467"/>
+<path d="M244 481L311 557 234 633 167 528 Z" fill="#127686" opacity=".7"/>
+<path d="M376 481L313 557 383 632 457 523 Z" fill="#0d6675" opacity=".6"/>
+<path d="M312 558V632" stroke="#6cc4ca" stroke-width="6" opacity=".65"/>
+<!-- neck -->
+<path d="M258 405 L252 489 Q311 523 370 488 L365 402" fill="url(#skin)"/>
+<!-- ears -->
+<ellipse cx="157" cy="313" rx="31" ry="62" fill="#b27558"/><ellipse cx="463" cy="313" rx="31" ry="62" fill="#ac7056"/>
+<!-- face -->
+<path d="M156 207 C162 118 231 93 308 90 C402 84 464 149 460 245 L449 363 Q439 450 357 476 L311 492 261 476 Q170 448 167 354 Z" fill="url(#skin)"/>
+<path d="M182 344Q197 419 246 446" fill="none" stroke="#ce9470" stroke-width="9" opacity=".25"/>
+<path d="M441 344Q427 414 375 445" fill="none" stroke="#754c3f" stroke-width="8" opacity=".22"/>
+<!-- nose -->
+<path d="M311 274 Q306 329 297 357 Q309 372 329 358" stroke="#8a594e" stroke-width="7" fill="none" stroke-linecap="round" opacity=".6"/>
+<!-- eyes and eyebrows -->
+<g id="eyebrows" stroke="#1e1a1e" stroke-width="13" stroke-linecap="round"><path d="M204 261 Q242 240 272 257" fill="none"/><path d="M348 257 Q388 241 422 259" fill="none"/></g>
+<g id="eyes"><path d="M198 291Q236 271 275 293 Q240 314 198 291" fill="#f8ecdf"/><path d="M346 293Q382 271 423 290 Q387 315 346 293" fill="#f8ecdf"/><circle cx="244" cy="292" r="16" fill="#302523"/><circle cx="382" cy="292" r="16" fill="#302523"/><circle cx="248" cy="287" r="5" fill="#fff"/><circle cx="386" cy="287" r="5" fill="#fff"/></g>
+<!-- Mouth stays closed: no speech or lip sync -->
+<path d="M275 411 Q314 432 355 408" stroke="#763e43" fill="none" stroke-width="7" stroke-linecap="round"/>
+<!-- hair atop -->
+<path d="M155 249 Q123 169 166 129 Q196 67 262 66 Q331 29 398 77 Q477 101 472 181 L454 252 444 194Q434 148 413 151 Q361 174 292 160 Q227 155 182 202 L165 271 Z" fill="url(#hair)"/>
+<path d="M183 150 Q232 103 291 110 Q331 132 391 108" fill="none" stroke="#4a3433" stroke-width="16" stroke-linecap="round" opacity=".45"/>
+<!-- Simple arm rig: moves over the temple to scratch after large gifts. -->
+<g id="scratchArm" aria-label="Head scratching arm">
+  <path d="M485 617 Q548 532 508 413 Q486 342 463 265" stroke="#105a7b" stroke-width="82" fill="none" stroke-linecap="round"/>
+  <path d="M482 418 Q467 338 450 244" stroke="#c38a68" stroke-width="44" fill="none" stroke-linecap="round"/>
+  <g id="scratchHand">
+    <ellipse cx="447" cy="207" rx="30" ry="39" fill="#d8a07b" stroke="#8c5947" stroke-width="3"/>
+    <path d="M427 198 Q410 164 424 153 Q436 149 441 175 M442 176 Q434 138 448 135 Q462 137 461 175 M461 180 Q465 142 479 149 Q487 158 469 195" stroke="#d8a07b" stroke-width="17" stroke-linecap="round" fill="none"/>
+  </g>
+</g>
+</svg>
+<img id="photoAvatar" alt="Custom three-frame character artwork"/>
+</div>
+<div id="boom">💥</div><div id="win">LEVEL UP!</div><div id="hostName">NOVA <span id="sub">TRY TO STOP ME</span></div></div>
+<div id="gift"><span id="giftText">💥 TNT INCOMING!</span><small id="giftViewer">VIEWER SENT A GIFT</small></div>
+
+</div>
+<script>
+'use strict';
+const stage=document.querySelector('#stage'); const E=id=>document.getElementById(id);
+function fit(){const scale=Math.min(innerWidth/1080,innerHeight/1920);stage.style.transform=`scale(${scale})`;stage.style.left=`${(innerWidth-1080*scale)/2}px`;stage.style.top=`${(innerHeight-1920*scale)/2}px`;}addEventListener('resize',fit);fit();
+let cfg={name:'NOVA',subtitle:'TRY TO STOP ME',avatarMode:'svg',level:1};let blink=false;let scratching=false;let scratchTimer=null;let browTimer=null;
+function photoFrame(){if(cfg.avatarMode!=='png'){E('avatarWrap').classList.remove('png');return;}E('avatarWrap').classList.add('png');const url=(scratching?cfg.scratchUrl:'')||(blink?cfg.blinkUrl:'')||cfg.idleUrl||'';if(url&&E('photoAvatar').getAttribute('src')!==url)E('photoAvatar').src=url;}
+function updateConfig(next){cfg={...cfg,...next};E('hostName').firstChild.textContent=(cfg.name||'NOVA').toUpperCase()+' ';E('sub').textContent=(cfg.subtitle||'TRY TO STOP ME').toUpperCase();E('level').textContent=cfg.level||1;photoFrame();}
+async function init(){try{const v=await fetch('/api/state').then(r=>r.json());updateConfig(v.config);}catch(_){}const source=new EventSource('/api/events');source.onmessage=e=>{try{const msg=JSON.parse(e.data);if(msg.type==='config')updateConfig(msg.config);else if(msg.type==='action')onAction(msg);}catch(err){console.warn(err);}};}
+function hit(){
+  const wrap=E('avatarWrap');
+  if(!scratching){wrap.classList.remove('boom');void wrap.offsetWidth;wrap.classList.add('boom');}
+  E('boom').classList.remove('active');void E('boom').offsetWidth;E('boom').classList.add('active');
+  E('eyebrows').classList.add('surprised');clearTimeout(browTimer);
+  browTimer=setTimeout(()=>E('eyebrows').classList.remove('surprised'),1100);
+}
+function scratch(){
+  scratching=true;
+  const wrap=E('avatarWrap');wrap.classList.remove('scratching','boom');void wrap.offsetWidth;
+  wrap.classList.add('scratching');photoFrame();clearTimeout(scratchTimer);
+  scratchTimer=setTimeout(()=>{scratching=false;wrap.classList.remove('scratching');photoFrame();},3100);
+}
+function giftBanner(name,viewer,count,tnt){
+  E('giftText').textContent=`💥 ${name||'GIFT'}: ${tnt||1} TNT`;
+  E('giftViewer').textContent=viewer?`@${viewer} • ${count||1} gift(s)`:`GIFT RECEIVED`;
+  E('gift').classList.add('show');clearTimeout(window.giftHide);
+  window.giftHide=setTimeout(()=>E('gift').classList.remove('show'),3200);
+}
+function onAction(event){
+  const {action,viewer,gift,count,tnt,big}=event;
+  if(event.level)updateConfig({level:event.level});
+  if(action==='gift'){
+    giftBanner(gift,viewer,count,tnt);
+    hit();
+    if(big)scratch();
+  } else if(action==='boom'){hit();}
+  else if(action==='scratch'){scratch();}
+  else if(action==='win'){
+    E('win').classList.remove('active');void E('win').offsetWidth;E('win').classList.add('active');
+  }else if(action==='idle'){
+    E('gift').classList.remove('show');scratching=false;
+    clearTimeout(scratchTimer);E('avatarWrap').classList.remove('scratching','boom');photoFrame();
+  }
+}
+setInterval(()=>{if(Math.random()<.28)return;blink=true;E('eyes').classList.add('closed');photoFrame();setTimeout(()=>{blink=false;E('eyes').classList.remove('closed');photoFrame();},135);},3900);
+init();
+</script></body></html>
