@@ -35,7 +35,9 @@ const cfg={
   viewerPort:number('PORT',number('VIEWER_PORT',3000)),viewDistance:clamp(number('VIEW_DISTANCE',10),3,14),
   setupArena:flag('ARENA_SETUP',true),resetArena:flag('ARENA_RESET',false),
   winRestart:flag('RESET_AFTER_WIN',false),
-  allowRescue:flag('ALLOW_EMERGENCY_TP',true),
+  allowRescue:flag('ALLOW_EMERGENCY_TP',false),
+  disableMobs:flag('DISABLE_MOBS',true),
+  maxMoveFailures:Math.max(1,number('MAX_MOVE_FAILURES',3)),
   glanceEvery:Math.round(clamp(number('GLANCE_EVERY',24),0,500)),
   repairWindow:Math.round(clamp(number('REPAIR_LOOKBACK',100),10,300)),
   overlayUrl:e.OVERLAY_URL||'',overlayToken:e.ADMIN_TOKEN||''
@@ -51,7 +53,7 @@ if(cfg.resetArena && e.ARENA_CLEAR_CONFIRM!=='YES_CLEAR_25X20X300')throw new Err
 let bot=null,nav=null,connection=false,viewerStarted=false,workerRunning=false,rcon=null;
 let step=0,loadedMaterial='',lastFillAt=-1,blastUntil=0,blastSeenAt=0,recoveryCount=0,placed=0,walked=0;
 const maxSteps=plan.length;
-let navFailures=0;
+let navFailures=0;let consecutiveFailedSteps=0;let lastFailedStep=-1;
 const emit=(event,data={})=>{if(flag('TOWER_TELEMETRY',true))console.log(JSON.stringify({type:'tower_telemetry',event,time:new Date().toISOString(),step,level:step<maxSteps?plan[step].h:cfg.height,...data}));};
 function active(){return !!(bot && connection && bot.entity && bot._client?.state==='play');}
 function asVec(v){return new Vec3(v.x,v.y,v.z);}
@@ -93,7 +95,16 @@ async function gameSetup(){
     'time set day','weather clear',`gamemode creative ${cfg.botName}`,
     `effect give ${cfg.botName} minecraft:resistance 999999 4 true`
   ];
-  for(const c of commands){try{await command(c);}catch(ex){console.warn('Optional game setting:',ex.message);}}
+  if(cfg.disableMobs){
+    commands.unshift('gamerule doMobSpawning false','difficulty peaceful');
+  }
+  for(const c of commands){try{await command(c);}catch(ex){console.warn('Optional game setting:',c,ex.message);}}
+  if(cfg.disableMobs) {
+    // Peaceful removes hostile mobs; remove existing passive mobs without deleting
+    // primed TNT, armor stands, item frames, blocks or player entities.
+    const passive=['cow','sheep','pig','chicken','horse','donkey','mule','llama','rabbit','fox','wolf','cat','villager','wandering_trader','bat','squid','glow_squid','salmon','cod','tropical_fish','pufferfish','dolphin','turtle','frog','goat','bee','axolotl'];
+    for(const type of passive)try{await command('kill @e[type=minecraft:'+type+']');}catch(ex){console.warn('Cleanup '+type+': '+ex.message);}  
+  }
 }
 async function setupArena(reset){
   const cmds=buildArenaCommands(cfg,reset);
@@ -179,14 +190,19 @@ async function walkToRoute(p){
   // Route block placement continues to be native Mineflayer placeBlock.
   for(let attempt=0;attempt<2;attempt++){
     try{
+      const start=pos().clone();
+      emit('move_begin',{from:{x:start.x,y:start.y,z:start.z},to:dest,step:step,attempt});
       await nav.walkTo(dest,{timeout:16000});
+      emit('move_end',{at:{x:pos().x,y:pos().y,z:pos().z},distanceToGoal:pos().distanceTo(asVec(dest)),step:step});
       navFailures=0;
       walked++;
       return;
     }catch(ex){
       navFailures++;
       nav.stop();
-      say(`Pathfinder retry ${attempt+1}: ${ex.message}`);
+      const q=pos();
+      say(`Pathfinder retry ${attempt+1} at (${q.x.toFixed(2)},${q.y.toFixed(2)},${q.z.toFixed(2)}) -> (${dest.x},${dest.y},${dest.z}): ${ex.message}`);
+      emit('move_failed',{error:ex.message,position:{x:q.x,y:q.y,z:q.z},destination:dest,attempt});
       if(attempt===1)throw ex;
       await nav.lookAt(new Vec3(p.x+.5,p.y+.7,p.z+.5));
       await pause(280);
@@ -221,7 +237,7 @@ async function placeAndWalk(i){
     await overlay('level',{level:band+1});
   }
   if(i%25===0)emit('build_progress',{x:p.x,y:p.y,z:p.z,material:p.material,placed,walked,landing:p.landing,progressPct:Math.round(i/maxSteps*100)});
-  if(cfg.glanceEvery>0 && i>0 && i%cfg.glanceEvery===0 && Math.random()<.5)await glance();
+  // No random camera glances during building: every look corresponds to placement or navigation.
 }
 async function repairGlassNear(){
   const y=Math.floor(pos()?.y||cfg.base);
@@ -301,12 +317,16 @@ async function buildLoop(){
     }
     try{
       await placeAndWalk(step);
-      step++;
+      step++;consecutiveFailedSteps=0;lastFailedStep=-1;
       await pause(cfg.stepMs+Math.random()*100);
     }catch(ex){
       nav?.stop();
       console.error(`Route step ${step} FAILED: ${ex.stack||ex.message}`);
-      emit('step_failed',{error:String(ex.message).slice(0,500),navFailures});
+      if(lastFailedStep===step)consecutiveFailedSteps++; else {lastFailedStep=step;consecutiveFailedSteps=1;}
+      emit('step_failed',{error:String(ex.message).slice(0,500),navFailures,consecutiveFailedSteps});
+      if(consecutiveFailedSteps>=cfg.maxMoveFailures){
+        throw new Error(`Stopped after ${consecutiveFailedSteps} failures at route step ${step}. Inspect move_failed / step_failed telemetry instead of looping or teleporting.`);
+      }
       if(blastUntil){
         say('Build interrupted by TNT; waiting for explosion before assessing damage');
         continue;
@@ -315,6 +335,7 @@ async function buildLoop(){
         throw ex; // Explicitly stop instead of papering over a broken route.
       }
       const prev=step>0?routeAt(step-1):null;
+      if(!cfg.allowRescue)throw new Error(`Move failed without teleport fallback at step ${step}: ${ex.message}`);
       await emergencyResume(prev,ex.message);
       await pause(500);
     }
@@ -332,7 +353,7 @@ function connect(){
   const opts={host:cfg.mcHost,port:cfg.mcPort,username:cfg.botName,auth:cfg.botAuth,hideErrors:false};
   if(cfg.botAuth==='microsoft')opts.profilesFolder=e.MC_PROFILE_FOLDER||'/data/minecraft-auth';
   bot=mineflayer.createBot(opts);
-  nav=new Navigation(bot,{humanStyle:flag('HUMAN_MOVEMENT',true),seed:number('HUMAN_SEED',2026)});
+  nav=new Navigation(bot,{humanStyle:flag('HUMAN_MOVEMENT',false),seed:number('HUMAN_SEED',2026)});
   bot.on('spawn',()=>{
     connection=true;
     say('Bot spawned; video-inspired wide-platform route active');
@@ -367,6 +388,6 @@ function connect(){
     setTimeout(connect,10000);
   });
 }
-say(`Version 6 wide-platform ascent: glass ${cfg.width}x${cfg.depth}x${cfg.height}, ${maxSteps} native placements; landing every ${cfg.bandHeight} levels`);
+say(`Version 6.1 stable-path audit, wide-platform ascent: glass ${cfg.width}x${cfg.depth}x${cfg.height}, ${maxSteps} native placements; landing every ${cfg.bandHeight} levels`);
 say('Offline-mode Minecraft server and RCON MUST remain private. Use a separate, backed-up game world.');
 connect();

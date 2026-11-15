@@ -27,8 +27,12 @@ class Navigation {
     this.movement.allowFreeMotion=false;
     this.movement.allowParkour=false;
     this.movement.allowSprinting=false;
+    this.movement.canSwim=false;
+    this.movement.canUseOneByOneTowers=false;
     this.bot.pathfinder.setMovements(this.movement);
-    if (this.options.humanStyle!==false && typeof createHuman==='function') {
+    // Prefer stable, documented Pathfinder for a reliable test run.
+    // Experimental human steering is opt-in once basic movement is confirmed.
+    if (this.options.humanStyle===true && typeof createHuman==='function') {
       this.human=createHuman(this.bot,{
         seed:this.options.seed ?? 2026,
         movements:this.movement,
@@ -62,7 +66,7 @@ class Navigation {
     // Do not let Pathfinder create towers, mine glass, or consume route blocks.
     const work=this.human ?
       this.human.walkTo(point,{radius:0.27,timeout}) :
-      this.bot.pathfinder.goto(new goals.GoalBlock(Math.floor(point.x),Math.floor(point.y),Math.floor(point.z)));
+      this.bot.pathfinder.goto(new goals.GoalNear(Math.floor(point.x),Math.floor(point.y),Math.floor(point.z),0));
     let timer;
     try{
       await Promise.race([work,new Promise((_,reject)=>{
