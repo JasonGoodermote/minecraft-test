@@ -1,6 +1,6 @@
 'use strict';
 /*
- * TikTok Glass Tower v5 – tower-specific navigation + decision policy.
+ * TikTok Build-up v6 – video-inspired broad landings with natural navigation.
  * Player locomotion and EVERY ROUTE BLOCK use actual Mineflayer controls.
  * RCON is only for world/arena management, initial spawn and emergency rescue.
  * Needs a dedicated, backed-up Minecraft Java/Paper 1.21.4 world.
@@ -10,7 +10,7 @@ const {mineflayer: startViewer} = require('prismarine-viewer');
 const {Rcon} = require('rcon-client');
 const {Vec3} = require('vec3');
 const createItem = require('prismarine-item');
-const {routeAt,validateArena,buildArenaCommands,glassWallCommands} = require('./route');
+const {makePlan,validateArena,buildArenaCommands,glassWallCommands} = require('./route');
 const {Navigation}=require('./navigation');
 const {decide,STATES}=require('./brain');
 const {
@@ -41,6 +41,8 @@ const cfg={
   overlayUrl:e.OVERLAY_URL||'',overlayToken:e.ADMIN_TOKEN||''
 };
 validateArena(cfg);
+const plan=makePlan(cfg);
+const routeAt=(i)=>{if(i<0||i>=plan.length)throw new RangeError(`Invalid route index ${i}`);return plan[i]};
 if(!cfg.rconPassword)throw new Error('Missing RCON_PASSWORD');
 if(!/^[A-Za-z0-9_]{1,16}$/.test(cfg.botName))throw new Error('Invalid BOT_USERNAME');
 if(!Number.isInteger(cfg.bandHeight)||cfg.bandHeight<1)throw new Error('Invalid MATERIAL_BAND_HEIGHT');
@@ -48,9 +50,9 @@ if(cfg.resetArena && e.ARENA_CLEAR_CONFIRM!=='YES_CLEAR_25X20X300')throw new Err
 
 let bot=null,nav=null,connection=false,viewerStarted=false,workerRunning=false,rcon=null;
 let step=0,loadedMaterial='',lastFillAt=-1,blastUntil=0,blastSeenAt=0,recoveryCount=0,placed=0,walked=0;
-const maxSteps=cfg.width*cfg.height;
+const maxSteps=plan.length;
 let navFailures=0;
-const emit=(event,data={})=>{if(flag('TOWER_TELEMETRY',true))console.log(JSON.stringify({type:'tower_telemetry',event,time:new Date().toISOString(),step,level:Math.floor(step/cfg.width),...data}));};
+const emit=(event,data={})=>{if(flag('TOWER_TELEMETRY',true))console.log(JSON.stringify({type:'tower_telemetry',event,time:new Date().toISOString(),step,level:step<maxSteps?plan[step].h:cfg.height,...data}));};
 function active(){return !!(bot && connection && bot.entity && bot._client?.state==='play');}
 function asVec(v){return new Vec3(v.x,v.y,v.z);}
 function block(p){return bot.blockAt(asVec(p));}
@@ -195,7 +197,7 @@ async function emergencyResume(previous,reason){
   // Explicitly exceptional; ordinary blocks/movement never use teleportation.
   if(!cfg.allowRescue)throw new Error(`Rescue disabled: ${reason}`);
   recoveryCount++;
-  const safe=previous?standAt(previous):firstAnchor(routeAt(0,cfg));
+  const safe=previous?standAt(previous):firstAnchor(routeAt(0));
   say(`EMERGENCY rescue #${recoveryCount}: ${reason}. Teleport ONLY for recovery, not normal movement`);
   emit('rescue',{reason,recoveryCount});
   nav?.stop();
@@ -204,7 +206,7 @@ async function emergencyResume(previous,reason){
   if(isFeetInsideSolid(pos(),q=>block(q)))throw new Error('Rescue arrived inside a solid block—arena reset required');
 }
 async function placeAndWalk(i){
-  const p=routeAt(i,cfg),previous=i>0?routeAt(i-1,cfg):null;
+  const p=routeAt(i),previous=i>0?routeAt(i-1):null;
   const climbBase=transitionSupport(previous,p);
   if(climbBase){
     // Riser lets the bot jump +1 block. Without it, the raised step has no
@@ -214,11 +216,11 @@ async function placeAndWalk(i){
   await placeNatively(p);
   await walkToRoute(p);
   const band=Math.floor(p.h/cfg.bandHeight);
-  if(i===0||i%cfg.width===0){
-    if(i%cfg.width===0) say(`Elevation ${p.h+1}/${cfg.height}, band ${band+1}, ${p.material}`);
+  if(i===0||p.h!==previous.h){
+    if(i===0||p.h!==previous.h) say(`Elevation ${p.h+1}/${cfg.height}, band ${band+1}, ${p.material}`);
     await overlay('level',{level:band+1});
   }
-  if(i%25===0)emit('build_progress',{x:p.x,y:p.y,z:p.z,material:p.material,placed,walked});
+  if(i%25===0)emit('build_progress',{x:p.x,y:p.y,z:p.z,material:p.material,placed,walked,landing:p.landing,progressPct:Math.round(i/maxSteps*100)});
   if(cfg.glanceEvery>0 && i>0 && i%cfg.glanceEvery===0 && Math.random()<.5)await glance();
 }
 async function repairGlassNear(){
@@ -233,15 +235,15 @@ async function inspectAfterTnt(){
   await pause(300);
   let missing=-1;
   for(let i=Math.max(0,step-cfg.repairWindow);i<step;i++){
-    const p=routeAt(i,cfg);
+    const p=routeAt(i);
     const v=block(p);
     if(v && isEmptyBlock(v)){missing=i;break;}
   }
-  const currentY=Math.floor(pos().y),expectedY=step>0?routeAt(step-1,cfg).y+1:cfg.base;
+  const currentY=Math.floor(pos().y),expectedY=step>0?routeAt(step-1).y+1:cfg.base;
   if(missing>=0||currentY<expectedY-3){
     emit('tnt_setback',{missing,oldStep:step});
     step=missing>=0?missing:0;
-    const prev=step>0?routeAt(step-1,cfg):null;
+    const prev=step>0?routeAt(step-1):null;
     await emergencyResume(prev,`TNT setback / fall (to route step ${step})`);
   }
   await repairGlassNear();
@@ -251,7 +253,7 @@ async function inspectAfterTnt(){
 async function performSetup(){
   await gameSetup();
   if(cfg.setupArena)await setupArena(cfg.resetArena);
-  const first=routeAt(0,cfg),anchor=firstAnchor(first);
+  const first=routeAt(0),anchor=firstAnchor(first);
   bot.clearControlStates();
   // Single initial teleport to known dry position, never into a newly created block.
   await command(`tp ${cfg.botName} ${anchor.x.toFixed(2)} ${anchor.y.toFixed(2)} ${anchor.z.toFixed(2)} 0 10`);
@@ -266,7 +268,7 @@ async function performSetup(){
 }
 async function buildLoop(){
   while(active()){
-    const last=step>0?routeAt(step-1,cfg):null;
+    const last=step>0?routeAt(step-1):null;
     const fallen=!!(last && bot.entity && bot.entity.position.y < last.y-1.5);
     const current=decide({step,maxSteps,blastUntil,navFailures,falling:fallen});
     if(current===STATES.WAIT_TNT){nav?.stop();await pause(200);continue;}
@@ -292,7 +294,7 @@ async function buildLoop(){
       if(!cfg.winRestart){say('Holding at goal (RESET_AFTER_WIN=false)');return;}
       await pause(3000);
       await setupArena(true);
-      const p=routeAt(0,cfg),a=firstAnchor(p);
+      const p=routeAt(0),a=firstAnchor(p);
       await command(`tp ${cfg.botName} ${a.x} ${a.y} ${a.z}`);
       await pause(600);
       step=0;loadedMaterial='';lastFillAt=-1;continue;
@@ -312,7 +314,7 @@ async function buildLoop(){
       if(/Water or lava|Unexpected .*in route|Initial spawn|No adjacent supporting block|Inventory item|creative inventory|Unloaded block|Native placement failed/.test(ex.message)){
         throw ex; // Explicitly stop instead of papering over a broken route.
       }
-      const prev=step>0?routeAt(step-1,cfg):null;
+      const prev=step>0?routeAt(step-1):null;
       await emergencyResume(prev,ex.message);
       await pause(500);
     }
@@ -333,7 +335,7 @@ function connect(){
   nav=new Navigation(bot,{humanStyle:flag('HUMAN_MOVEMENT',true),seed:number('HUMAN_SEED',2026)});
   bot.on('spawn',()=>{
     connection=true;
-    say('Bot spawned');
+    say('Bot spawned; video-inspired wide-platform route active');
     nav.initialize();
     if(cfg.viewer&&!viewerStarted){
       try{
@@ -365,6 +367,6 @@ function connect(){
     setTimeout(connect,10000);
   });
 }
-say(`Version 5 pathfinder: glass interior ${cfg.width}x${cfg.depth}x${cfg.height} Y=${cfg.base}, ${maxSteps} placed steps; no flyTo or command placement`);
+say(`Version 6 wide-platform ascent: glass ${cfg.width}x${cfg.depth}x${cfg.height}, ${maxSteps} native placements; landing every ${cfg.bandHeight} levels`);
 say('Offline-mode Minecraft server and RCON MUST remain private. Use a separate, backed-up game world.');
 connect();

@@ -1,90 +1,68 @@
 'use strict';
-// Minecraft Java overworld blocks occupy Y=-64...319.
-// 25x20 refers to the FREE INNER SPACE, not the glass walls.
+// Video-inspired: serpentine ribbons climb one block per elevation, while
+// every 15th elevation widens into a large, player-built landing.
 const MATERIALS = Object.freeze([
-  'minecraft:oak_planks',
-  'minecraft:stone_bricks',
-  'minecraft:sandstone',
-  'minecraft:bricks',
-  'minecraft:red_concrete',
-  'minecraft:orange_concrete',
-  'minecraft:yellow_concrete',
-  'minecraft:lime_concrete',
-  'minecraft:green_concrete',
-  'minecraft:cyan_concrete',
-  'minecraft:light_blue_concrete',
-  'minecraft:blue_concrete',
-  'minecraft:purple_concrete',
-  'minecraft:magenta_concrete',
-  'minecraft:pink_concrete',
-  'minecraft:quartz_block',
-  'minecraft:prismarine_bricks',
-  'minecraft:deepslate_bricks',
-  'minecraft:gold_block',
-  'minecraft:diamond_block'
+  'minecraft:oak_planks','minecraft:stone_bricks','minecraft:sandstone',
+  'minecraft:bricks','minecraft:red_concrete','minecraft:orange_concrete',
+  'minecraft:yellow_concrete','minecraft:lime_concrete','minecraft:green_concrete',
+  'minecraft:cyan_concrete','minecraft:light_blue_concrete','minecraft:blue_concrete',
+  'minecraft:purple_concrete','minecraft:magenta_concrete','minecraft:pink_concrete',
+  'minecraft:quartz_block','minecraft:prismarine_bricks','minecraft:deepslate_bricks',
+  'minecraft:gold_block','minecraft:diamond_block'
 ]);
-function validateArena(cfg) {
-  if (!Number.isInteger(cfg.x) || !Number.isInteger(cfg.z) || !Number.isInteger(cfg.base)) throw new Error('X/Z/TOWER_Y must be integers');
-  if (!Number.isInteger(cfg.width) || cfg.width < 4 || cfg.width > 80) throw new Error('TOWER_WIDTH must be 4..80');
-  if (!Number.isInteger(cfg.depth) || cfg.depth < 4 || cfg.depth > 80) throw new Error('TOWER_DEPTH must be 4..80');
-  if (!Number.isInteger(cfg.height) || cfg.height < 2 || cfg.height > 350) throw new Error('TOWER_HEIGHT must be 2..350');
-  if (cfg.base < -62 || cfg.base + cfg.height + 2 > 319) {
-    throw new Error(`Arena Y=${cfg.base}, height=${cfg.height}: the roof would exceed Minecraft's vanilla Y=319 block limit. For a 300-block arena set TOWER_Y=0.`);
-  }
+function validateArena(c){
+  for(const k of ['x','z','base','width','depth','height','bandHeight'])if(!Number.isInteger(c[k]))throw Error(k+' must be integer');
+  if(c.width<6||c.width>40||c.depth<6||c.depth>40)throw Error('Tower interior requires 6–40 block sides');
+  if(c.height<2||c.height>300||c.base < -62||c.base+c.height+2>319)throw Error('Tower outside standard Minecraft vertical build limit');
+  if(c.bandHeight<2||c.height%c.bandHeight!==0)throw Error('Height must divide evenly into 15-block material bands');
 }
-function rowForHeight(height, depth) {
-  const period = 2 * (depth - 1);
-  const t = height % period;
-  return t < depth ? t : period - t;
-}
-function routeAt(index, cfg) {
-  if (!Number.isInteger(index) || index < 0 || index >= cfg.width * cfg.height) throw new RangeError('route index out of range');
-  const h = Math.floor(index / cfg.width);
-  const col = index % cfg.width;
-  const dx = h % 2 === 0 ? col : cfg.width - 1 - col;
-  const dz = rowForHeight(h, cfg.depth);
-  return {x: cfg.x + dx, y: cfg.base + h, z: cfg.z + dz, h, material: materialForHeight(h, cfg.bandHeight)};
-}
-function materialForHeight(height, bandHeight=15) {
-  return MATERIALS[Math.floor(height / bandHeight) % MATERIALS.length];
-}
-function buildArenaCommands(cfg, reset) {
-  validateArena(cfg);
-  const {x,z,base,width:w,depth:d,height:h} = cfg;
-  const commands = [];
-  const lo=base, hi=base+h+1;
-  // First seal ALL sides and the floor. Old v3 cleared first, allowing water
-  // to flow back in before the enclosure was complete.
-  commands.push(`fill ${x-2} ${lo} ${z-2} ${x-2} ${hi} ${z+d+1} minecraft:barrier`);
-  commands.push(`fill ${x+w+1} ${lo} ${z-2} ${x+w+1} ${hi} ${z+d+1} minecraft:barrier`);
-  commands.push(`fill ${x-2} ${lo} ${z-2} ${x+w+1} ${hi} ${z-2} minecraft:barrier`);
-  commands.push(`fill ${x-2} ${lo} ${z+d+1} ${x+w+1} ${hi} ${z+d+1} minecraft:barrier`);
-  commands.push(...glassWallCommands(cfg,lo,hi));
-  commands.push(`fill ${x-2} ${base-1} ${z-2} ${x+w+1} ${base-1} ${z+d+1} minecraft:obsidian`);
-  commands.push(`fill ${x-1} ${base+h+2} ${z-1} ${x+w} ${base+h+2} ${z+d} minecraft:glass`);
-  if (reset) {
-    // Air-replace after sealing. Working top-down eliminates source water,
-    // terrain and the previous build. A 24-high slice is 12,000 blocks.
-    for (let top=h-1; top>=0; top-=24) {
-      const from=Math.max(0,top-23);
-      commands.push(`fill ${x} ${base+from} ${z} ${x+w-1} ${base+top} ${z+d-1} minecraft:air`);
-    }
-    // Drain AGAIN for any flowing water that was present during the first pass.
-    for (let top=h-1; top>=0; top-=24) {
-      const from=Math.max(0,top-23);
-      commands.push(`fill ${x} ${base+from} ${z} ${x+w-1} ${base+top} ${z+d-1} minecraft:air replace minecraft:water`);
+function materialForHeight(h,b=15){return MATERIALS[Math.floor(h/b)%MATERIALS.length]}
+function makePlan(c){
+  validateArena(c);
+  const result=[];let last=null;let lastZ=null;
+  for(let h=0;h<c.height;h++){
+    const band=Math.floor(h/c.bandHeight), t=h%c.bandHeight;
+    const boundary=(band%2===0?0:c.depth-1);
+    const toward=(boundary===0?1:-1);
+    let z;
+    if(h===0)z=boundary;
+    else if(t===0)z=lastZ+toward;
+    else z=lastZ===boundary?boundary+toward:boundary;
+    // At the end of each material band, broaden to a long painted platform.
+    const rows=t===c.bandHeight-1?
+      Array.from({length: c.depth},(_,i)=>z+i*toward).filter(v=>v>=0&&v<c.depth):[z];
+    for(const rz of rows){
+      const forward=!last||last.x===c.x;
+      for(let j=0;j<c.width;j++){
+        const rx=c.x+(forward?j:c.width-1-j);
+        const p={x:rx,y:c.base+h,z:c.z+rz,h,band,material:materialForHeight(h,c.bandHeight),landing:t===c.bandHeight-1};
+        if(last){
+          const dx=Math.abs(p.x-last.x),dz=Math.abs(p.z-last.z),dy=p.y-last.y;
+          if(dx+dz!==1 || dy<0 || dy>1)throw Error(`Non-walkable plan transition at ${result.length}: ${JSON.stringify(last)} -> ${JSON.stringify(p)}`);
+        }
+        result.push(p);last=p;
+      }
+      lastZ=rz;
     }
   }
-  return commands;
+  return result;
 }
-
-function glassWallCommands(cfg, bottom, top) {
-  const {x,z,width:w,depth:d} = cfg;
-  return [
-    `fill ${x-1} ${bottom} ${z-1} ${x-1} ${top} ${z+d} minecraft:glass`,
-    `fill ${x+w} ${bottom} ${z-1} ${x+w} ${top} ${z+d} minecraft:glass`,
-    `fill ${x-1} ${bottom} ${z-1} ${x+w} ${top} ${z-1} minecraft:glass`,
-    `fill ${x-1} ${bottom} ${z+d} ${x+w} ${top} ${z+d} minecraft:glass`
-  ];
-}
-module.exports = { MATERIALS, validateArena, rowForHeight, routeAt, materialForHeight, buildArenaCommands, glassWallCommands };
+function glassWallCommands(c,lo,hi){const {x,z,width:w,depth:d}=c;return [
+`fill ${x-1} ${lo} ${z-1} ${x-1} ${hi} ${z+d} minecraft:glass`,
+`fill ${x+w} ${lo} ${z-1} ${x+w} ${hi} ${z+d} minecraft:glass`,
+`fill ${x-1} ${lo} ${z-1} ${x+w} ${hi} ${z-1} minecraft:glass`,
+`fill ${x-1} ${lo} ${z+d} ${x+w} ${hi} ${z+d} minecraft:glass`];}
+function buildArenaCommands(c,reset){validateArena(c);const {x,z,base,width:w,depth:d,height:h}=c;const commands=[];
+// Shell before cleanup, all fill commands under Minecraft's fill volume cap.
+const top=base+h+1;
+for(let from=base;from<=top;from+=16){const to=Math.min(top,from+15);
+commands.push(`fill ${x-2} ${from} ${z-2} ${x-2} ${to} ${z+d+1} minecraft:barrier`);
+commands.push(`fill ${x+w+1} ${from} ${z-2} ${x+w+1} ${to} ${z+d+1} minecraft:barrier`);
+commands.push(`fill ${x-2} ${from} ${z-2} ${x+w+1} ${to} ${z-2} minecraft:barrier`);
+commands.push(`fill ${x-2} ${from} ${z+d+1} ${x+w+1} ${to} ${z+d+1} minecraft:barrier`);
+commands.push(...glassWallCommands(c,from,to));}
+commands.push(`fill ${x-2} ${base-1} ${z-2} ${x+w+1} ${base-1} ${z+d+1} minecraft:obsidian`);
+commands.push(`fill ${x-1} ${base+h+2} ${z-1} ${x+w} ${base+h+2} ${z+d} minecraft:glass`);
+if(reset){for(let top=h-1;top>=0;top-=24){let lo=Math.max(0,top-23);commands.push(`fill ${x} ${base+lo} ${z} ${x+w-1} ${base+top} ${z+d-1} minecraft:air`);}}
+return commands;}
+module.exports={MATERIALS,validateArena,materialForHeight,makePlan,buildArenaCommands,glassWallCommands};

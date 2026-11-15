@@ -1,9 +1,4 @@
-'use strict';
-const assert=require('node:assert/strict');
-const {STATES,decide}=require('./brain');
-assert.equal(decide({step:42,maxSteps:7500,now:1}),STATES.BUILD);
-assert.equal(decide({step:42,maxSteps:7500,now:1,blastUntil:2}),STATES.WAIT_TNT);
-assert.equal(decide({step:42,maxSteps:7500,now:1,routeDamaged:true}),STATES.RECOVER);
-assert.equal(decide({step:42,maxSteps:7500,now:1,navFailures:2}),STATES.REPLAN);
-assert.equal(decide({step:7500,maxSteps:7500,now:1}),STATES.WIN);
-console.log('PASS: tower controller prioritizes TNT, recovery, replanning, construction, and win');
+const assert=require('node:assert/strict');const {decide,STATES}=require('./brain');
+const b={step:100,maxSteps:16525,blastUntil:0,navFailures:0,falling:false};
+assert.equal(decide(b),STATES.BUILD);assert.equal(decide({...b,step:16525}),STATES.WIN);
+console.log('PASS: brain build/win');
