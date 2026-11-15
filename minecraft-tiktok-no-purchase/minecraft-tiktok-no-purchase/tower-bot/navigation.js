@@ -21,7 +21,7 @@ class Navigation {
     m.allowSprinting=false;m.canOpenDoors=false;
     m.canSwim=false;
     this.bot.pathfinder.setMovements(m);
-    console.log('[Navigator] v6.2: direct adjacent walk/jump, Pathfinder for distant destinations');
+    console.log('[Navigator] v6.3: pulsed adjacent jump, Pathfinder for distant destinations');
   }
   stop() {
     this.cancelled=true;
@@ -45,31 +45,47 @@ class Navigation {
     const goal=new Vec3(dest.x,dest.y,dest.z);
     this.cancelled=false;
     const start=bot.entity.position.clone();
-    let lastProgress=Date.now(),best=horizontalDistance(start,goal);
-    let lastLog=0;
+    let jumpReleasedAt=0, jumpingUntil=0, lastLog=0;
+    const started=Date.now();
+    // Never hold jump continually: in Creative it causes vertical flight, and
+    // even in Survival repeated jumps look mechanical and can overshoot.
     try {
-      while(Date.now()-lastProgress<timeout) {
+      while(Date.now()-started<timeout) {
         if(this.cancelled||bot._client?.state!=='play')throw new Error('Movement interrupted/disconnected');
         const p=bot.entity.position;
         const horizontal=horizontalDistance(p,goal);
         const dy=goal.y-p.y;
-        if(horizontal<0.30 && Math.abs(dy)<0.38){return;}
-        if(horizontal<best-0.045){best=horizontal;lastProgress=Date.now();}
-        const face = new Vec3(goal.x,p.y+1.45,goal.z);
-        await bot.lookAt(face,true);
-        // Walking and jumping must be driven together for raised adjacent steps.
-        // Do not jump after arriving: approach while jumping to clear the target edge.
-        const mustJump=dy>0.36 || (dy>-.35 && horizontal<0.95 && p.y<goal.y-0.25);
-        bot.setControlState('forward',horizontal>0.24);
+        if(p.y>Math.max(start.y,goal.y)+2.0) {
+          throw new Error('Unexpected upward movement (flight/levitation): '+JSON.stringify(this.diagnostics(dest)));
+        }
+        if(p.y<Math.min(start.y,goal.y)-2.0) {
+          throw new Error('Fell below route: '+JSON.stringify(this.diagnostics(dest)));
+        }
+        if(horizontal<0.32 && Math.abs(dy)<0.36 && bot.entity.onGround)return;
+        const now=Date.now();
+        // Face target at current eye height: this drives only horizontal forward movement.
+        await bot.lookAt(new Vec3(goal.x,p.y+1.55,goal.z),true);
+        bot.setControlState('forward',horizontal>0.22);
         bot.setControlState('sprint',false);
-        bot.setControlState('jump',mustJump);
-        if(Date.now()-lastLog>3000){
+        const needsRise=goal.y-start.y>0.42;
+        if(needsRise && bot.entity.onGround && horizontal<1.28 &&
+           now-jumpReleasedAt>650 && now>jumpingUntil) {
+          jumpingUntil=now+145; // short jump pulse, not continuous held jump
+        }
+        if(jumpingUntil && now>=jumpingUntil){
+          bot.setControlState('jump',false);
+          jumpingUntil=0;
+          jumpReleasedAt=now;
+        } else {
+          bot.setControlState('jump',jumpingUntil>now);
+        }
+        if(now-lastLog>1500){
           console.log('[Navigator] adjacent_step',JSON.stringify(this.diagnostics(dest)));
-          lastLog=Date.now();
+          lastLog=now;
         }
         await sleep(50);
       }
-      throw new Error('Direct walk/jump made no progress: '+JSON.stringify(this.diagnostics(dest)));
+      throw new Error('Adjacent walk/jump timed out: '+JSON.stringify(this.diagnostics(dest)));
     } finally {bot.clearControlStates();}
   }
   async walkTo(dest,{timeout=16000}={}) {

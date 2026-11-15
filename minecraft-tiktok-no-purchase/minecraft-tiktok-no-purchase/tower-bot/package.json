@@ -1,6 +1,6 @@
 {
   "name": "railway-tiktok-tower-bot",
-  "version": "6.2.0-first-step",
+  "version": "6.3.0-survival-physics",
   "private": true,
   "scripts": {
     "start": "node index.js",

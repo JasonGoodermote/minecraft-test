@@ -9,7 +9,6 @@ const mineflayer = require('mineflayer');
 const {mineflayer: startViewer} = require('prismarine-viewer');
 const {Rcon} = require('rcon-client');
 const {Vec3} = require('vec3');
-const createItem = require('prismarine-item');
 const {makePlan,validateArena,buildArenaCommands,glassWallCommands} = require('./route');
 const {Navigation}=require('./navigation');
 const {decide,STATES}=require('./brain');
@@ -92,7 +91,8 @@ async function gameSetup(){
   const commands=[
     'gamerule keepInventory true','gamerule doDaylightCycle false',
     'gamerule doWeatherCycle false','gamerule doTileDrops false',
-    'time set day','weather clear',`gamemode creative ${cfg.botName}`,
+    'time set day','weather clear',`gamemode survival ${cfg.botName}`,
+    'gamerule fallDamage false',
     `effect give ${cfg.botName} minecraft:resistance 999999 4 true`
   ];
   if(cfg.disableMobs){
@@ -133,16 +133,30 @@ async function glance(){
   await pause(240+Math.random()*250);
 }
 async function setItem(material){
-  if(loadedMaterial===material && step-lastFillAt<48 && bot.heldItem?.count>8)return;
+  // Real survival physics prevent a held jump from turning into Creative flight.
+  // Inventory items are supplied by the server, but every placed block uses bot.placeBlock.
+  const itemName=actualName(material);
   const data=require('minecraft-data')(bot.version);
-  const definition=data.itemsByName[actualName(material)];
-  if(!definition)throw new Error(`Material ${material} is not an inventory item in version ${bot.version}`);
-  const Item=createItem(bot.version);
-  await bot.creative.setInventorySlot(36,new Item(definition.id,64));
-  bot.setQuickBarSlot(0);
-  // Wait for the held-item packet; network scheduling can exceed 95ms on Railway.
-  for(let i=0; i<10 && !bot.heldItem; i++)await pause(100);
-  if(!bot.heldItem)throw new Error('Inventory item is not held (creative inventory failed)');
+  const definition=data.itemsByName[itemName];
+  if(!definition)throw new Error(`Material ${material} is not an item in ${bot.version}`);
+  if(loadedMaterial===material && bot.heldItem?.name===itemName && bot.heldItem.count>5)return;
+  if(loadedMaterial!==material){
+    await command(`clear ${cfg.botName}`); // New 15-level material band: remove old stacks.
+    await pause(120);
+  }
+  let item=bot.inventory.items().find(i=>i.name===itemName && i.count>5);
+  if(!item){
+    await command(`give ${cfg.botName} minecraft:${itemName} 64`);
+    for(let i=0;i<25;i++){
+      await pause(100);
+      item=bot.inventory.items().find(i=>i.name===itemName && i.count>0);
+      if(item)break;
+    }
+  }
+  if(!item)throw new Error(`Inventory supply failed for ${material}`);
+  await bot.equip(item,'hand');
+  for(let i=0;i<10 && bot.heldItem?.name!==itemName;i++)await pause(100);
+  if(bot.heldItem?.name!==itemName)throw new Error(`Inventory equip failed for ${material}`);
   loadedMaterial=material;lastFillAt=step;
 }
 async function placeNatively(p){
@@ -281,7 +295,11 @@ async function performSetup(){
   // Single initial teleport to known dry position, never into a newly created block.
   await command(`tp ${cfg.botName} ${anchor.x.toFixed(2)} ${anchor.y.toFixed(2)} ${anchor.z.toFixed(2)} 0 10`);
   await pause(850);
-  bot.creative.stopFlying(); // gravity and walking, no creative flyTo
+  // Survival physics: jumping must never activate Creative flight.
+  if (bot.game?.gameMode === 'creative' || bot.game?.gameMode === 1) {
+    throw new Error('Game mode still Creative after setup; refusing to jump');
+  }
+  say(`Movement physics mode: ${String(bot.game?.gameMode)} (expected survival)`);
   step=0;loadedMaterial='';lastFillAt=-1;blastUntil=0;
   const feet=pos();
   if(isFeetInsideSolid(feet,q=>block(q)))throw new Error(`Initial spawn embedded in a block at ${feet.toString()}. Reset arena.`);
@@ -338,7 +356,7 @@ async function buildLoop(){
         say('Build interrupted by TNT; waiting for explosion before assessing damage');
         continue;
       }
-      if(/Water or lava|Unexpected .*in route|Initial spawn|No adjacent supporting block|Inventory item|creative inventory|Unloaded block|Native placement failed/.test(ex.message)){
+      if(/Water or lava|Unexpected .*in route|Initial spawn|No adjacent supporting block|Inventory item|survival inventory|Unloaded block|Native placement failed/.test(ex.message)){
         throw ex; // Explicitly stop instead of papering over a broken route.
       }
       const prev=step>0?routeAt(step-1):null;
@@ -395,6 +413,6 @@ function connect(){
     setTimeout(connect,10000);
   });
 }
-say(`Version 6.2 first-step jump fix, wide-platform ascent: glass ${cfg.width}x${cfg.depth}x${cfg.height}, ${maxSteps} native placements; landing every ${cfg.bandHeight} levels`);
+say(`Version 6.3 survival-physics jump fix, wide-platform ascent: glass ${cfg.width}x${cfg.depth}x${cfg.height}, ${maxSteps} native placements; landing every ${cfg.bandHeight} levels`);
 say('Offline-mode Minecraft server and RCON MUST remain private. Use a separate, backed-up game world.');
 connect();
