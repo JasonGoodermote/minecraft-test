@@ -1,0 +1,4 @@
+const assert=require('node:assert/strict');const {makeChunks,validate,layerMaterial,arenaShell,clearInterior}=require('./plan');
+const c={x:0,y:12,z:0,width:25,depth:20,height:300,band:15,burst:5};validate(c);
+let total=0;for(let l=0;l<c.height;l++){const chunks=makeChunks(c,l);let set=new Set();for(const p of chunks){assert.ok(p.z>=c.z+1&&p.z<c.z+c.depth);assert.ok(p.x1>=0&&p.x1<25&&p.x2>=0&&p.x2<25);assert.equal(p.y,c.y+l);assert.equal(p.cells,Math.abs(p.x2-p.x1)+1);for(let x=Math.min(p.x1,p.x2);x<=Math.max(p.x1,p.x2);x++){let key=x+','+p.z;assert.ok(!set.has(key));set.add(key);}}assert.equal(set.size,25*19);total+=set.size;if(l>0&&l%15===0)assert.notEqual(layerMaterial(c,l-1),layerMaterial(c,l));}
+assert.equal(total,25*19*300);assert.equal(arenaShell(c).length,4*Math.ceil(302/12)+1);assert.equal(clearInterior(c).length,15);console.log('PASSED: 300 levels, 142500 construction cells, all rows cover 25-wide, 15-level material changes, shell valid');
