@@ -230,6 +230,13 @@ async function placeAndWalk(i){
     await placeNatively(climbBase);
   }
   await placeNatively(p);
+  if(i===0) {
+    const d=nav.diagnostics(standAt(p));
+    say('First-step physics preflight: '+JSON.stringify(d));
+    if(d.targetSupport==='air'||d.targetSupport==='unloaded') throw new Error('First target has no supporting block: '+JSON.stringify(d));
+    if(d.targetFeet!=='air' && d.targetFeet!=='cave_air' && d.targetFeet!=='void_air') throw new Error('First target feet obstructed: '+JSON.stringify(d));
+    if(d.targetHead!=='air' && d.targetHead!=='cave_air' && d.targetHead!=='void_air') throw new Error('First target head obstructed: '+JSON.stringify(d));
+  }
   await walkToRoute(p);
   const band=Math.floor(p.h/cfg.bandHeight);
   if(i===0||p.h!==previous.h){
@@ -388,6 +395,6 @@ function connect(){
     setTimeout(connect,10000);
   });
 }
-say(`Version 6.1 stable-path audit, wide-platform ascent: glass ${cfg.width}x${cfg.depth}x${cfg.height}, ${maxSteps} native placements; landing every ${cfg.bandHeight} levels`);
+say(`Version 6.2 first-step jump fix, wide-platform ascent: glass ${cfg.width}x${cfg.depth}x${cfg.height}, ${maxSteps} native placements; landing every ${cfg.bandHeight} levels`);
 say('Offline-mode Minecraft server and RCON MUST remain private. Use a separate, backed-up game world.');
 connect();

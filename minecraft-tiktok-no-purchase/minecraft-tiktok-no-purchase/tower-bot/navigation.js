@@ -1,88 +1,91 @@
 'use strict';
-/*
- * Tier 1: proven Mineflayer path planning and optional human-style steering.
- * Does not place/dig blocks for navigation or use server teleportation.
- * `createHuman` is present in newer mineflayer-pathfinder releases; standard
- * Pathfinder is a documented fallback if the deployed version lacks it.
- */
-const {pathfinder, Movements, goals, createHuman} = require('mineflayer-pathfinder');
+/* v6.2 movement: direct physics control for adjacent blocks, pathfinder only for distance. */
+const {pathfinder, Movements, goals} = require('mineflayer-pathfinder');
 const {Vec3} = require('vec3');
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+const horizontalDistance=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
+const shortStep=(from,to)=>horizontalDistance(from,to)<=1.65&&Math.abs(from.y-to.y)<=1.4;
 
 class Navigation {
-  constructor(bot, options={}) {
+  constructor(bot) {
     this.bot=bot;
-    this.options=options;
-    this.human=null;
-    this.movement=null;
     this.initialized=false;
+    this.cancelled=false;
     bot.loadPlugin(pathfinder);
   }
   initialize() {
     if(this.initialized)return;
     this.initialized=true;
-    this.movement=new Movements(this.bot);
-    this.movement.canDig=false;
-    this.movement.canOpenDoors=false;
-    this.movement.allow1by1towers=false;
-    this.movement.allowFreeMotion=false;
-    this.movement.allowParkour=false;
-    this.movement.allowSprinting=false;
-    this.movement.canSwim=false;
-    this.movement.canUseOneByOneTowers=false;
-    this.bot.pathfinder.setMovements(this.movement);
-    // Prefer stable, documented Pathfinder for a reliable test run.
-    // Experimental human steering is opt-in once basic movement is confirmed.
-    if (this.options.humanStyle===true && typeof createHuman==='function') {
-      this.human=createHuman(this.bot,{
-        seed:this.options.seed ?? 2026,
-        movements:this.movement,
-        setback:false,
-        personality:{
-          basePitch:0.12,
-          sprints:false,
-          jumpRate:0,
-          glanceRate:0.035,
-          strafe:0.12,
-          lookAhead:1.05,
-          stopRadius:0.23,
-          reaction:0.12,
-          turnTime:1.0
-        }
-      });
-      console.log('[Navigator] Human-style walk and camera enabled');
-    } else {
-      console.log('[Navigator] Standard Pathfinder enabled (human-style API absent)');
-    }
+    const m=new Movements(this.bot);
+    m.canDig=false;m.allow1by1towers=false;m.allowParkour=false;
+    m.allowSprinting=false;m.canOpenDoors=false;
+    m.canSwim=false;
+    this.bot.pathfinder.setMovements(m);
+    console.log('[Navigator] v6.2: direct adjacent walk/jump, Pathfinder for distant destinations');
   }
-  stop(){
-    try{this.human?.stop();}catch(_){}
+  stop() {
+    this.cancelled=true;
     try{this.bot.pathfinder.setGoal(null);}catch(_){}
     try{this.bot.clearControlStates();}catch(_){}
   }
-  async walkTo(position,{timeout=20000}={}){
-    const point=new Vec3(position.x,position.y,position.z);
-    const start=this.bot.entity.position.clone();
-    if (start.distanceTo(point)<0.35) return;
-    // Do not let Pathfinder create towers, mine glass, or consume route blocks.
-    const work=this.human ?
-      this.human.walkTo(point,{radius:0.27,timeout}) :
-      this.bot.pathfinder.goto(new goals.GoalNear(Math.floor(point.x),Math.floor(point.y),Math.floor(point.z),0));
+  diagnostics(dest) {
+    const p=this.bot.entity.position;
+    const get=(x,y,z)=>{const b=this.bot.blockAt(new Vec3(Math.floor(x),Math.floor(y),Math.floor(z)));return b?b.name:'unloaded'};
+    return {
+      position:{x:+p.x.toFixed(2),y:+p.y.toFixed(2),z:+p.z.toFixed(2)},
+      destination:dest,onGround:!!this.bot.entity.onGround,
+      feet:get(p.x,p.y,p.z),underFeet:get(p.x,p.y-1,p.z),
+      targetFeet:get(dest.x,dest.y,dest.z),
+      targetHead:get(dest.x,dest.y+1,dest.z),
+      targetSupport:get(dest.x,dest.y-1,dest.z)
+    };
+  }
+  async walkAdjacent(dest,{timeout=9000}={}) {
+    const bot=this.bot;
+    const goal=new Vec3(dest.x,dest.y,dest.z);
+    this.cancelled=false;
+    const start=bot.entity.position.clone();
+    let lastProgress=Date.now(),best=horizontalDistance(start,goal);
+    let lastLog=0;
+    try {
+      while(Date.now()-lastProgress<timeout) {
+        if(this.cancelled||bot._client?.state!=='play')throw new Error('Movement interrupted/disconnected');
+        const p=bot.entity.position;
+        const horizontal=horizontalDistance(p,goal);
+        const dy=goal.y-p.y;
+        if(horizontal<0.30 && Math.abs(dy)<0.38){return;}
+        if(horizontal<best-0.045){best=horizontal;lastProgress=Date.now();}
+        const face = new Vec3(goal.x,p.y+1.45,goal.z);
+        await bot.lookAt(face,true);
+        // Walking and jumping must be driven together for raised adjacent steps.
+        // Do not jump after arriving: approach while jumping to clear the target edge.
+        const mustJump=dy>0.36 || (dy>-.35 && horizontal<0.95 && p.y<goal.y-0.25);
+        bot.setControlState('forward',horizontal>0.24);
+        bot.setControlState('sprint',false);
+        bot.setControlState('jump',mustJump);
+        if(Date.now()-lastLog>3000){
+          console.log('[Navigator] adjacent_step',JSON.stringify(this.diagnostics(dest)));
+          lastLog=Date.now();
+        }
+        await sleep(50);
+      }
+      throw new Error('Direct walk/jump made no progress: '+JSON.stringify(this.diagnostics(dest)));
+    } finally {bot.clearControlStates();}
+  }
+  async walkTo(dest,{timeout=16000}={}) {
+    const position=new Vec3(dest.x,dest.y,dest.z);
+    const start=this.bot.entity.position;
+    if(start.distanceTo(position)<0.34)return;
+    // Most placements are a single horizontal block apart, including raised stairs.
+    if(shortStep(start,position))return this.walkAdjacent(dest,{timeout:Math.min(12000,timeout)});
+    this.cancelled=false;
+    const action=this.bot.pathfinder.goto(new goals.GoalNear(Math.floor(dest.x),Math.floor(dest.y),Math.floor(dest.z),0));
     let timer;
-    try{
-      await Promise.race([work,new Promise((_,reject)=>{
-        timer=setTimeout(()=>reject(new Error('Navigation timed out')),timeout+2000);
-      })]);
-    }catch(err){this.stop();throw err;}
-    finally{clearTimeout(timer);}
-    if(this.bot.entity.position.distanceTo(point)>1.1)throw new Error(`Navigation ended too far from goal: ${this.bot.entity.position.distanceTo(point).toFixed(2)} blocks`);
+    try {
+      await Promise.race([action,new Promise((_,rej)=>timer=setTimeout(()=>rej(new Error('Pathfinder timeout: '+JSON.stringify(this.diagnostics(dest)))),timeout))]);
+    } catch(err){this.stop();throw err;} finally {clearTimeout(timer);}
+    if(this.bot.entity.position.distanceTo(position)>1.1)throw new Error('Pathfinder ended far from goal: '+JSON.stringify(this.diagnostics(dest)));
   }
-  async lookAt(point){
-    const target=new Vec3(point.x,point.y,point.z);
-    if(this.human){
-      try{return await this.human.lookAt(target,{settleMs:80});}
-      catch(err){if(!String(err.message).includes('setback'))throw err;}
-    }
-    return this.bot.lookAt(target,false);
-  }
+  lookAt(point){return this.bot.lookAt(new Vec3(point.x,point.y,point.z),true);}
 }
-module.exports={Navigation};
+module.exports={Navigation,shortStep,horizontalDistance};

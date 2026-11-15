@@ -1,42 +1,44 @@
-# Minecraft Build-Up v6.1 — movement audit and mob cleanup
+# TowerBot v6.2 — first-step movement patch
 
-This is a **diagnostic reliability patch**, not a verified natural-animation solution. No live Railway connection or gameplay test has been performed. It keeps the v6 route and game world but makes its failures observable.
+This patch targets the confirmed Railway log failure at route step 0:
+`(0.50,0.00,1.50) -> (0.5,1,0.5): Navigation timed out`.
 
-## Findings from v6 source
+## What changed
 
-- `ARENA_SETUP=false` and `ARENA_RESET=false` can leave the old tower geometry in place; v6's new route then conflicts with solid blocks or water.
-- Native block placement needs a supporting block and a safe spot from which the bot can reach it. The route's adjacency tests don't guarantee actual Pathfinder traversability or line-of-sight placement.
-- The previous controller could repeatedly attempt bad navigation and fall back to emergency teleportation. This creates poor movement and obscures the underlying issue.
-- Random look-around events interrupted pathfinding. Removed during building.
-- Mob spawning wasn't disabled by the v6 arena setup. Peaceful + doMobSpawning=false is now set through RCON at startup. Existing passive mobs are removed by individual entity type, retaining primed TNT.
+- `navigation.js`: walk/jump on adjacent squares using Mineflayer's own `forward`/`jump`/`lookAt` controls rather than Pathfinder. Pathfinder remains available for distant targets. No normal-play teleports or command block placements were added. Controls are cleared on success or failure.
+- `index.js`: checks first target support, feet space, and headroom before attempting the jump; prints `First-step physics preflight` with the relevant block names.
+- `package.json`: version bump to 6.2.0-first-step. No additional runtime dependencies.
 
 ## Install
 
-Replace `index.js`, `navigation.js`, `package.json` in the existing `tower-bot` GitHub folder with these versions. Keep `route.js`, `grounded.js`, `brain.js`, `Dockerfile`, viewer and other services unchanged. Deploy the updated commit in Railway.
+In GitHub, navigate to the existing `tower-bot` directory and **replace only** `index.js`, `navigation.js`, and `package.json` with the three files from this archive. Do not upload the `README` or tests unless desired. Keep `route.js`, `grounded.js`, `brain.js`, and your existing Canvas-enabled `Dockerfile` unchanged.
 
-Set / update these bot variables:
+On Railway, keep existing environment variables, **including the secret RCON_PASSWORD**. Set:
 
-```env
-DISABLE_MOBS=true
-HUMAN_MOVEMENT=false
-ALLOW_EMERGENCY_TP=false
-MAX_MOVE_FAILURES=3
-GLANCE_EVERY=0
+```
 ARENA_SETUP=false
 ARENA_RESET=false
+ALLOW_EMERGENCY_TP=false
 TOWER_TELEMETRY=true
+MAX_MOVE_FAILURES=3
 ```
 
-Do **not** turn on ARENA_RESET on an existing world. It destroys blocks. If your original v5 and v6 routes overlap, create a backed-up new test world before resetting.
+Arena setup was already confirmed completed in the user's logs. Do not reset or clear the arena again, unless a separate inspection shows the space is obstructed. Existing construction might block later steps; this patch only addresses the first transition.
 
-Keep existing connection variables and RCON_PASSWORD intact. In Railway Minecraft service, set `SPAWN_MONSTERS=false`, `SPAWN_ANIMALS=false`, `DIFFICULTY=peaceful` when supported by its Docker image. `gamerule doMobSpawning false` is set in the bot at startup regardless. TNT is still allowed.
+## Read the logs
 
-## Diagnostics
+Expected beginning:
 
-Look in `tower-bot` Deploy Logs for `move_begin`, `move_end`, `move_failed`, `step_failed`. If route geometry is impossible, this version stops after failed attempts rather than hiding the issue in endless resets. A moving camera does not prove block placement is working.
+```
+Version 6.2 first-step jump fix
+[Navigator] v6.2: direct adjacent walk/jump, Pathfinder for distant destinations
+First-step physics preflight: {...}
+[Navigator] adjacent_step {...}
+Elevation 1/300, band 1, minecraft:oak_planks
+```
 
-`HUMAN_MOVEMENT=false` intentionally uses the stable Pathfinder controller for auditing. Once movement works, enable human steering for a separate controlled comparison. It is not guaranteed to improve the underlying route.
+If it fails, send the `First-step physics preflight`, `[Navigator] adjacent_step`, and `move_failed` lines. These now identify feet position, support block, target head/feet, and whether the bot is on the ground. Avoid repeatedly restarting if the preflight detects an obstruction.
 
-## Validation
+## Test limits
 
-`npm run check` for JS syntax; `npm run test` for route and state-machine unit checks. These do NOT validate actual Minecraft physics, navigation or vision quality.
+Validated JS syntax, tower route generation and decision tests, and inspected the step-zero control flow. NOT tested against an actual Minecraft server or Prismarine Viewer. Real walking and jump physics still require a Railway test. This does not claim to fully fix all future tower route transitions or recreate a human player's movement.
