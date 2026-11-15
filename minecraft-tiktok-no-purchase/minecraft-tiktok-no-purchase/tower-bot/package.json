@@ -1,11 +1,11 @@
 {
   "name": "railway-tiktok-tower-bot",
-  "version": "4.0.0",
+  "version": "5.0.0-beta.1",
   "private": true,
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check route.js && node --check grounded.js",
-    "test": "node test-route.js && node test-grounded.js"
+    "check": "node --check index.js && node --check navigation.js && node --check brain.js && node --check route.js && node --check grounded.js",
+    "test": "node test-route.js && node test-grounded.js && node test-brain.js"
   },
   "dependencies": {
     "mineflayer": "^4.31.0",
@@ -14,6 +14,7 @@
     "canvas": "^3.2.3",
     "prismarine-item": "^1.15.0",
     "vec3": "^0.1.10",
-    "minecraft-data": "^3.98.0"
+    "minecraft-data": "^3.98.0",
+    "mineflayer-pathfinder": "^2.4.5"
   }
 }

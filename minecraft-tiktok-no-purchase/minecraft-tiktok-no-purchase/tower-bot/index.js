@@ -1,6 +1,6 @@
 'use strict';
 /*
- * TikTok Glass Tower v4 – grounded Mineflayer builder.
+ * TikTok Glass Tower v5 – tower-specific navigation + decision policy.
  * Player locomotion and EVERY ROUTE BLOCK use actual Mineflayer controls.
  * RCON is only for world/arena management, initial spawn and emergency rescue.
  * Needs a dedicated, backed-up Minecraft Java/Paper 1.21.4 world.
@@ -11,6 +11,8 @@ const {Rcon} = require('rcon-client');
 const {Vec3} = require('vec3');
 const createItem = require('prismarine-item');
 const {routeAt,validateArena,buildArenaCommands,glassWallCommands} = require('./route');
+const {Navigation}=require('./navigation');
+const {decide,STATES}=require('./brain');
 const {
   isEmptyBlock,isLiquid,standingPosition,firstAnchor,transitionSupport,
   candidateSupports,durationToWalk,isFeetInsideSolid
@@ -44,9 +46,11 @@ if(!/^[A-Za-z0-9_]{1,16}$/.test(cfg.botName))throw new Error('Invalid BOT_USERNA
 if(!Number.isInteger(cfg.bandHeight)||cfg.bandHeight<1)throw new Error('Invalid MATERIAL_BAND_HEIGHT');
 if(cfg.resetArena && e.ARENA_CLEAR_CONFIRM!=='YES_CLEAR_25X20X300')throw new Error('Destructive arena reset requires ARENA_CLEAR_CONFIRM=YES_CLEAR_25X20X300');
 
-let bot=null,connection=false,viewerStarted=false,workerRunning=false,rcon=null;
+let bot=null,nav=null,connection=false,viewerStarted=false,workerRunning=false,rcon=null;
 let step=0,loadedMaterial='',lastFillAt=-1,blastUntil=0,blastSeenAt=0,recoveryCount=0,placed=0,walked=0;
 const maxSteps=cfg.width*cfg.height;
+let navFailures=0;
+const emit=(event,data={})=>{if(flag('TOWER_TELEMETRY',true))console.log(JSON.stringify({type:'tower_telemetry',event,time:new Date().toISOString(),step,level:Math.floor(step/cfg.width),...data}));};
 function active(){return !!(bot && connection && bot.entity && bot._client?.state==='play');}
 function asVec(v){return new Vec3(v.x,v.y,v.z);}
 function block(p){return bot.blockAt(asVec(p));}
@@ -111,8 +115,8 @@ async function glance(){
     new Vec3(p.x+(Math.random()-.5)*5,p.y+1.3,p.z+(Math.random()-.5)*5),
     new Vec3(p.x+.5,p.y+1.7,p.z+5)
   ];
-  bot.clearControlStates();
-  await bot.lookAt(points[Math.floor(Math.random()*points.length)],false);
+  nav?.stop();
+  await (nav?nav.lookAt(points[Math.floor(Math.random()*points.length)]):bot.lookAt(points[0],false));
   await pause(240+Math.random()*250);
 }
 async function setItem(material){
@@ -166,59 +170,23 @@ async function placeNatively(p){
   }
   throw new Error(`Native placement failed at ${p.x},${p.y},${p.z}; no command fallback used`);
 }
-async function moveByControls(destination, label){
-  const dest=asVec(destination);
-  if(!active())throw new Error('Disconnected before walking');
-  const initial=pos().clone();
-  const heightDiff=dest.y-initial.y;
-  if(heightDiff>1.25||heightDiff<-.8)throw new Error(`Walk request has unsafe height change ${heightDiff.toFixed(1)}`);
-  const rise=heightDiff>.38;
-  const timeout=durationToWalk(distanceXZ(initial,dest),rise);
-  const deadline=Date.now()+timeout;
-  let lastPos=initial.clone(),lastMovement=Date.now(),lastJump=0,arrivedAt=0;
-  bot.clearControlStates();
-  try{
-    while(active() && Date.now()<deadline){
-      const here=pos();
-      const horizontal=distanceXZ(here,dest);
-      const vertical=Math.abs(here.y-dest.y);
-      if(horizontal<.32 && vertical<.38){
-        if(!arrivedAt)arrivedAt=Date.now();
-        if(Date.now()-arrivedAt>160){walked++;return;}
-        bot.setControlState('forward',false);
-        bot.setControlState('jump',false);
-        await pause(70);continue;
-      }
-      arrivedAt=0;
-      if(horizontal>.16){
-        // Re-aim at a human head-height target every ~90ms while walking.
-        await bot.lookAt(new Vec3(dest.x,here.y+1.55,dest.z),false);
-        bot.setControlState('forward',true);
-      } else bot.setControlState('forward',false);
-      const needJump=dest.y-here.y>.36;
-      if(needJump && Date.now()-lastJump>390){
-        bot.setControlState('jump',true);lastJump=Date.now();
-      } else if(Date.now()-lastJump>220){bot.setControlState('jump',false);}
-      if(here.distanceTo(lastPos)>.11){lastPos=here.clone();lastMovement=Date.now();}
-      if(Date.now()-lastMovement>1800)throw new Error(`Stuck while walking (${label}): ${here.toString()}`);
-      if(isFeetInsideSolid(here,q=>block(q)))throw new Error(`Player inside a block while walking (${label})`);
-      await pause(85);
-    }
-    throw new Error(`Walking timeout (${label}); from ${initial.toString()} toward ${dest.toString()}, now ${pos().toString()}`);
-  }finally{bot.clearControlStates();}
-}
 async function walkToRoute(p){
   const dest=standAt(p);
-  const now=pos();
-  if(distanceXZ(now,dest)<.32 && Math.abs(now.y-dest.y)<.38)return;
+  if(!nav)throw new Error('Navigation engine not initialized');
+  // Pathfinder plans the route; its human movement controller executes it.
+  // Route block placement continues to be native Mineflayer placeBlock.
   for(let attempt=0;attempt<2;attempt++){
-    try{await moveByControls(dest,`route step=${step}`);return;}
-    catch(ex){
-      say(`Walking retry ${attempt+1}: ${ex.message}`);
-      bot.clearControlStates();
+    try{
+      await nav.walkTo(dest,{timeout:16000});
+      navFailures=0;
+      walked++;
+      return;
+    }catch(ex){
+      navFailures++;
+      nav.stop();
+      say(`Pathfinder retry ${attempt+1}: ${ex.message}`);
       if(attempt===1)throw ex;
-      // Humanlike pause, look at the intended platform, retry the jump.
-      await bot.lookAt(new Vec3(p.x+.5,p.y+.45,p.z+.5),false);
+      await nav.lookAt(new Vec3(p.x+.5,p.y+.7,p.z+.5));
       await pause(280);
     }
   }
@@ -229,7 +197,8 @@ async function emergencyResume(previous,reason){
   recoveryCount++;
   const safe=previous?standAt(previous):firstAnchor(routeAt(0,cfg));
   say(`EMERGENCY rescue #${recoveryCount}: ${reason}. Teleport ONLY for recovery, not normal movement`);
-  bot.clearControlStates();
+  emit('rescue',{reason,recoveryCount});
+  nav?.stop();
   await command(`tp ${cfg.botName} ${safe.x.toFixed(2)} ${safe.y.toFixed(2)} ${safe.z.toFixed(2)}`);
   await pause(750);
   if(isFeetInsideSolid(pos(),q=>block(q)))throw new Error('Rescue arrived inside a solid block—arena reset required');
@@ -249,6 +218,7 @@ async function placeAndWalk(i){
     if(i%cfg.width===0) say(`Elevation ${p.h+1}/${cfg.height}, band ${band+1}, ${p.material}`);
     await overlay('level',{level:band+1});
   }
+  if(i%25===0)emit('build_progress',{x:p.x,y:p.y,z:p.z,material:p.material,placed,walked});
   if(cfg.glanceEvery>0 && i>0 && i%cfg.glanceEvery===0 && Math.random()<.5)await glance();
 }
 async function repairGlassNear(){
@@ -269,12 +239,14 @@ async function inspectAfterTnt(){
   }
   const currentY=Math.floor(pos().y),expectedY=step>0?routeAt(step-1,cfg).y+1:cfg.base;
   if(missing>=0||currentY<expectedY-3){
+    emit('tnt_setback',{missing,oldStep:step});
     step=missing>=0?missing:0;
     const prev=step>0?routeAt(step-1,cfg):null;
     await emergencyResume(prev,`TNT setback / fall (to route step ${step})`);
   }
   await repairGlassNear();
   say(`Explosion resolved; next route step=${step}`);
+  emit('tnt_recovered',{resumeStep:step});
 }
 async function performSetup(){
   await gameSetup();
@@ -294,12 +266,27 @@ async function performSetup(){
 }
 async function buildLoop(){
   while(active()){
-    if(blastUntil){
-      if(Date.now()<blastUntil){bot.clearControlStates();await pause(200);continue;}
-      await inspectAfterTnt();continue;
+    const last=step>0?routeAt(step-1,cfg):null;
+    const fallen=!!(last && bot.entity && bot.entity.position.y < last.y-1.5);
+    const current=decide({step,maxSteps,blastUntil,navFailures,falling:fallen});
+    if(current===STATES.WAIT_TNT){nav?.stop();await pause(200);continue;}
+    if(blastUntil){await inspectAfterTnt();navFailures=0;continue;}
+    if(current===STATES.RECOVER){
+      say('Detected fall below last completed block; scanning damage and recovering');
+      blastUntil=Date.now()-1;
+      await inspectAfterTnt();
+      navFailures=0;
+      continue;
     }
-    if(step===maxSteps){
+    if(current===STATES.REPLAN){
+      nav?.stop();
+      emit('replan',{navFailures});
+      navFailures=0;
+      await pause(300);
+    }
+    if(current===STATES.WIN){
       say('GOAL REACHED: 300 blocks high');
+      emit('win',{placed,walked,recoveryCount});
       await overlay('win');
       await glance();
       if(!cfg.winRestart){say('Holding at goal (RESET_AFTER_WIN=false)');return;}
@@ -315,8 +302,13 @@ async function buildLoop(){
       step++;
       await pause(cfg.stepMs+Math.random()*100);
     }catch(ex){
-      bot.clearControlStates();
+      nav?.stop();
       console.error(`Route step ${step} FAILED: ${ex.stack||ex.message}`);
+      emit('step_failed',{error:String(ex.message).slice(0,500),navFailures});
+      if(blastUntil){
+        say('Build interrupted by TNT; waiting for explosion before assessing damage');
+        continue;
+      }
       if(/Water or lava|Unexpected .*in route|Initial spawn|No adjacent supporting block|Inventory item|creative inventory|Unloaded block|Native placement failed/.test(ex.message)){
         throw ex; // Explicitly stop instead of papering over a broken route.
       }
@@ -338,9 +330,11 @@ function connect(){
   const opts={host:cfg.mcHost,port:cfg.mcPort,username:cfg.botName,auth:cfg.botAuth,hideErrors:false};
   if(cfg.botAuth==='microsoft')opts.profilesFolder=e.MC_PROFILE_FOLDER||'/data/minecraft-auth';
   bot=mineflayer.createBot(opts);
+  nav=new Navigation(bot,{humanStyle:flag('HUMAN_MOVEMENT',true),seed:number('HUMAN_SEED',2026)});
   bot.on('spawn',()=>{
     connection=true;
     say('Bot spawned');
+    nav.initialize();
     if(cfg.viewer&&!viewerStarted){
       try{
         startViewer(bot,{port:cfg.viewerPort,firstPerson:cfg.firstPerson,viewDistance:cfg.viewDistance});
@@ -354,6 +348,8 @@ function connect(){
     const name=String(entity?.name||entity?.displayName||'').toLowerCase();
     if(!name.includes('tnt')&&!name.includes('primed'))return;
     blastUntil=Math.max(blastUntil,Date.now()+5000);
+    nav?.stop();
+    emit('tnt_detected',{entity:name});
     if(Date.now()-blastSeenAt>1600){say('TNT detected—stopping and watching for damage');blastSeenAt=Date.now();bot.clearControlStates();}
   });
   bot.on('kicked',v=>console.error('Minecraft kicked bot:',v));
@@ -361,6 +357,7 @@ function connect(){
   bot.on('end',()=>{
     say('Disconnected; reconnecting in 10 seconds');
     connection=false;workerRunning=false;
+    try{nav?.stop();}catch(_){}
     try{bot?.viewer?.close();}catch(_){ }
     viewerStarted=false;
     try{rcon?.end();}catch(_){ }
@@ -368,6 +365,6 @@ function connect(){
     setTimeout(connect,10000);
   });
 }
-say(`Version 4 grounded: glass interior ${cfg.width}x${cfg.depth}x${cfg.height} Y=${cfg.base}, ${maxSteps} placed steps; no flyTo or command placement`);
+say(`Version 5 pathfinder: glass interior ${cfg.width}x${cfg.depth}x${cfg.height} Y=${cfg.base}, ${maxSteps} placed steps; no flyTo or command placement`);
 say('Offline-mode Minecraft server and RCON MUST remain private. Use a separate, backed-up game world.');
 connect();

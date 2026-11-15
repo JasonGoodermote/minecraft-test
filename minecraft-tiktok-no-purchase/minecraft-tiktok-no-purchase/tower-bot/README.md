@@ -1,106 +1,56 @@
-# Glass Tower v4: grounded Minecraft builder + dry arena
+# Glass Tower v5 — Pathfinder integration pilot
 
-**Replaces the original Glass Tower v3 `tower-bot` files.** Keep your existing Railway project, Minecraft service, GitHub repository, service root directory, browser URL, gift-bridge and face overlay. Do not redeploy the whole ZIP as a new service.
+**Purpose:** Integrate an existing navigation engine into the user's already deployed Glass Tower v4. This is a **field-test candidate**, NOT a trained neural agent or fully validated Minecraft bot. Syntax and route/brain tests pass locally; an actual Railway + Minecraft run has not been performed here.
 
-This fixes two v3 architectural issues:
+## What is retained
 
-- v3 placed blocks with `/setblock` then flew or teleported onto them, sometimes clipping into the build. v4 makes each route placement with `mineflayer.bot.placeBlock`, uses creative inventory to supply blocks, walks using `setControlState('forward')`, and jumps using `setControlState('jump')`. Height transitions gain a temporary support block so the next step is physically reachable. No creative flight and no command-based route placement. Server commands are retained only for **arena construction**, one initial safe spawn and **emergency recovery** after a fall/TNT (can be disabled).
-- v3 cleared the arena **before** sealing it; v4 builds barrier, glass, obsidian floor and roof **first**, then empties the interior from top to bottom and drains residual water. If your existing world was generated with oceans and caves, you can still see water and terrain **outside** the glass; see “new dry world” below.
+- Separate Railway `minecraft` server, RCON, private service networking.
+- `tower-bot` service and browser Prismarine Viewer; `PORT` supplied by Railway takes priority over `VIEWER_PORT`.
+- 25 by 20 inner glass enclosure, Y=0..299 playable height, 20 materials switching every 15 vertical blocks.
+- 7,500-block rising route, real `bot.placeBlock()` (no `/setblock` for route), creative inventory provisioning.
+- TNT recognition and repair logic, existing `gift-bridge` and `face-overlay` unchanged.
 
-**Caveat:** Tested JavaScript syntax and route invariants locally. No live Minecraft server or Railway deployment was available to test native block placement, movement physics, water removal, gift handling or camera rendering. Treat this as an integration prototype; look at Railway logs before broadcasting.
+## New components
 
-## 1. Replace files in GitHub
+- `navigation.js`: `mineflayer-pathfinder` plugin and `createHuman` movement controller (when available in installed release); fallback to ordinary Pathfinder when unavailable. No autonomous digging or scaffold-creating movement; the separate placement routine handles building. This navigator replaces the hand-coded step-by-step walking routine.
+- `brain.js`: deterministic, domain-specific action priorities for interruption, fall recovery, replanning, building, and winning. Not a trained LLM. It has unit tests.
+- `TOWER_TELEMETRY`: emits JSON events in Railway logs, such as building progress, navigation failure, TNT setback, rescue and win. These are the initial dataset for selecting/tuning behavior. Logs aren't stored permanently unless the user exports them or adds a log collector.
 
-1. Extract `tower-bot-grounded-v4.zip` on your computer.
-2. In your GitHub repository, open the actual `tower-bot` directory. In your prior screenshot it was nested under `minecraft-tiktok-no-purchase/minecraft-tiktok-no-purchase/tower-bot`.
-3. Replace `index.js`, `route.js`, and `package.json`, and **add `grounded.js`**. `test-route.js` and `test-grounded.js` are optional local tests. Commit to `main`.
-4. **Keep your existing Canvas-enabled `Dockerfile`** as is. The current `package.json` retains its `canvas` dependency.
-5. Railway should deploy the latest commit to your existing bot service. The logs should begin with `Version 4 grounded...`.
+## Deploy on Railway
 
-## 2. Eliminate water in the scene (recommended)
+1. Back up the current working GitHub `tower-bot` directory or create a branch/tag. Do not replace the Minecraft service or its volumes.
+2. Replace `tower-bot/index.js`, `tower-bot/route.js`, `tower-bot/grounded.js`, and `tower-bot/package.json`. **Add** `navigation.js`, `brain.js`, `test-brain.js` (other tests optional). Do not upload an extra nested folder.
+3. Keep your existing Canvas-enabled `Dockerfile` for Prismarine Viewer; `npm install` installs `mineflayer-pathfinder` from the new package.json. Do not overwrite or expose secret variables.
+4. Retain the existing connection variables and RCON password. Add `HUMAN_MOVEMENT=true`, `HUMAN_SEED=2026`, and `TOWER_TELEMETRY=true`.
+5. **Set `ARENA_RESET=false` and `RESET_AFTER_WIN=false`** for the first navigation test, unless you intentionally need a clean test world; don't accidentally wipe the existing build. The prior v4 arena should already be sealed and drained.
+6. Redeploy, view deployment logs. Watch for `[Navigator] Human-style walk and camera enabled` or standard Pathfinder fallback, then `build_progress` events; open your existing gameplay viewer URL.
+7. Test first 3 vertical levels with **no TNT**, then low-rate TNT, then larger bursts. Check that there are no repeated emergency rescues or stuck loops before an unattended LIVE.
 
-The old overworld has water and natural terrain around your shaft. Since a 300-block-tall arena must begin near Y=0 in the standard build-height limit, simply changing Y doesn't make the exterior dry. **The cleanest option is a NEW, superflat world** on your existing Minecraft server, using its itzg Java server image:
-
-- Minecraft service → Variables: set `LEVEL_TYPE=FLAT` and `LEVEL=tiktok_glass_flat_v4`. Both are Java server properties supported by itzg's Minecraft Java container.
-- Restart/redeploy the **Minecraft** service first. `LEVEL` selects a new world-save directory. Do this only after confirming the existing `/data` volume is persistent; your older world remains separate under its previous name. `LEVEL_TYPE` does not retroactively alter an existing world. The new world begins without ocean water around the tower.
-- Keep `ONLINE_MODE=FALSE` only while the Minecraft service remains **private**, with no public TCP proxy or exposed RCON port.
-- Once the Minecraft service has started and its new world has loaded, redeploy the **bot service**.
-
-If you **want to keep the old world** instead, don't change `LEVEL`; enable a one-time arena reset (below) to seal and drain the tower interior. This will not remove an ocean **outside** the tower walls.
-
-## 3. Railway bot-service variables
-
-Edit **minecraft-test → Variables**. Preserve your *existing secret* `RCON_PASSWORD` (prefer Railway's reference to the Minecraft service) instead of putting a password in GitHub or this file.
+### Variables to add on top of existing v4 variables
 
 ```env
-MC_HOST=minecraft.railway.internal
-MC_PORT=25565
-BOT_USERNAME=TowerBot
-BOT_AUTH=offline
-RCON_HOST=minecraft.railway.internal
-RCON_PORT=25575
-ENABLE_VIEWER=true
-VIEWER_FIRST_PERSON=true
-VIEW_DISTANCE=10
-VIEWER_PORT=3000
-TOWER_X=0
-TOWER_Y=0
-TOWER_Z=0
-TOWER_WIDTH=25
-TOWER_DEPTH=20
-TOWER_HEIGHT=300
-MATERIAL_BAND_HEIGHT=15
-STEP_MS=420
-GLANCE_EVERY=24
-REPAIR_LOOKBACK=100
-ALLOW_EMERGENCY_TP=true
-ARENA_SETUP=true
-ARENA_RESET=true
-ARENA_CLEAR_CONFIRM=YES_CLEAR_25X20X300
-RESET_AFTER_WIN=false
+HUMAN_MOVEMENT="true"
+HUMAN_SEED="2026"
+TOWER_TELEMETRY="true"
+ARENA_RESET="false"
+RESET_AFTER_WIN="false"
 ```
 
-### Important destructive-reset warning
+**Important**: If `ARENA_SETUP=true` and there is no existing arena, the old setup code still needs to build it. For no-risk testing, use a dedicated copied world. `TOWER_Y=0` is correct for a 300-high glass arena in the vanilla Overworld.
 
-`ARENA_RESET=true` is for **one initial cleanup on a dedicated Minecraft world**. It deletes existing blocks/terrain/water inside X=0..24, Z=0..19, Y=0..299 (adjusted for coordinates), replacing the floor and re-sealing walls. Back up the world first. It repeats every time you redeploy or reconnect if left enabled. **After confirming the new arena is dry and the route is building, set `ARENA_RESET=false`** to avoid repeated deletion of the entire tower. This version restarts its route from the beginning if its process restarts; if `ARENA_RESET=false`, it may walk over existing completed steps until it reaches new ones.
+## Known limitations and next work
 
-`ALLOW_EMERGENCY_TP=true` means the bot may use one RCON teleport when trapped after TNT or after repeated unsuccessful physical movement. Ordinary movement uses walking/jumping, never teleportation. Set it `false` to make it strictly no-teleport—even when stuck—and manually reset it if needed.
+- `createHuman` is provided in recent Pathfinder source; if absent from the exact npm build, v5 uses standard Pathfinder and logs that fallback. Neither movement mode guarantees success on the specialized rising-block route without live tests.
+- Prismarine Viewer does not replicate every held-hand/first-person Minecraft animation from a native game client.
+- The current TNT recovery still includes emergency teleporting as a failure recovery. It is NOT a fully natural repair planner.
+- `brain.js` is a typed action selector, not AI model fine-tuning. To train a custom policy, record many full runs with randomized TNT events, label progress/fall/recovery, evaluate held-out game seeds, then replace only this decision layer; never let an LLM run arbitrary system commands.
+- Pathfinding through thin walkways inside a 300-block shaft may require route redesign (continuous 2-wide stair path, landing platforms). This cannot be solved solely by adding an LLM.
 
-`RESET_AFTER_WIN=false` avoids automatic full resets at height 300 until you've verified everything. Change to `true` only when you want the 300-block challenge to restart automatically. This clears the configured arena interior on every completed attempt.
+## Local validation
 
-Minecraft 1.21.4 / Paper remains the initial target version; use the same version for Mineflayer compatibility. The height limit is Y=-64..319; Y=0..299 permits a roof at Y=302. The 25×20 number is *usable floor area*, not radius.
-
-### Deprecated v3 variables
-
-Remove/ignore `USE_WALKING`, `NATURAL_PLACEMENT`, `REPAIR_GLASS`, `SURVEY_EVERY`, `CLEAR_ON_START`, `TOWER_HEIGHT=15` if leftover. In v4, native placement and walking are always enabled.
-
-## 4. What to look for in the logs
-
-```text
-[Grounded v4] Version 4 grounded: glass interior 25x20x300 Y=0...
-[Grounded v4] Bot spawned
-[Grounded v4] Browser viewer listening on port 8080
-[Grounded v4] Building SEALED arena walls and floor FIRST...
-[Grounded v4] Arena sealed; interior cleared/drained if reset was enabled
-[Grounded v4] Spawn on the foundation ... native placement only
-[Grounded v4] Elevation 1/300, band 1, minecraft:oak_planks
+```sh
+npm run check
+npm run test
 ```
 
-**The viewer's actual port is Railway's `PORT` override** (previously `8080`), not necessarily `VIEWER_PORT`. Continue to use the *same* public viewer URL, not the Minecraft TCP port.
-
-If the bot stops, the error should be explicit. Examples:
-
-- `Water or lava occupies...` → reset/drain or start a new flat world; do not start building into water.
-- `No adjacent supporting block` or `Native placement failed` → the client didn't reach/support the placement position; inspect the last blocks, logs and Minecraft version. There is deliberately **no `/setblock` fallback**.
-- `Walking timeout` or `Player inside a block` → bot will attempt an emergency recovery if allowed, not continue placing through solid blocks.
-- `RCON authentication failed` → `RCON_PASSWORD` doesn't match the Minecraft server. Check private service addresses and Railway secret reference.
-- Water **outside** the glass but not inside → the old world is still ocean/terrain; use the new flat world if you want a clear-looking scene.
-
-## 5. Limitations and next improvements
-
-- This version constructs the original winding 7,500-step route: 25 placements per vertical block of elevation, 300 elevations; material changes every 15 blocks of **height**. TNT can destroy the route and cause setbacks. The route is intentionally not a fully filled 25×20 floor at each elevation.
-- It is not human-level path planning. It uses simple per-step walking and jumping; heavy TNT destruction, lag, or slow chunks can still require recovery.
-- Prismarine Viewer is a browser-based view of a Minecraft bot, not the full Minecraft Java client; it may not reproduce authentic first-person hand-placement animations or every visual effect.
-- Offline-mode Minecraft and RCON must stay PRIVATE to Railway. Publicly expose **only** the viewer HTTP service.
-
-For tests, on a machine with Node dependencies installed, run `npm test` and `npm run check`. No Minecraft integration test was performed here.
+`npm run test` does not start a real Minecraft server. Verify game physics and navigator behavior on your Railway instance before streaming.
